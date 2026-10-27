@@ -52,7 +52,7 @@ func TestGitRefreshExtractsRenderedSnapshot(t *testing.T) {
 	if got := readSnapshotFile(t, h.m, "reg", sha, "skills/agent/tool/bin.png"); !strings.Contains(got, "<%- nope %>") {
 		t.Error("binary file was rendered")
 	}
-	for _, gone := range []string{"package.json", "README.md", "skills/agent/tool/justfile", "skills/agent/tool/scripts/__tests__/a.test.ts", "skills/agent/tool/.registry-ignore"} {
+	for _, gone := range []string{"package.json", "README.md", "skills/agent/tool/justfile", "skills/agent/tool/scripts/__tests__", "skills/agent/tool/.registry-ignore"} {
 		if _, err := os.Stat(filepath.Join(snap, gone)); err == nil {
 			t.Errorf("%s reached the snapshot", gone)
 		}
@@ -585,5 +585,34 @@ func TestTipWithoutBranch(t *testing.T) {
 	}
 	if err := repo.Fetch(context.Background()); err == nil {
 		t.Fatal("fetch without a remote succeeded")
+	}
+}
+
+func TestLoadIndexesReadOnly(t *testing.T) {
+	u := newUpstream(t)
+	u.write("skills/agent/a/SKILL.md", skillDoc("a", ""))
+	sha := u.commit("one")
+	h := newHarness(t, gitSourceConfig(u.url()))
+	h.init()
+	h.refresh("reg")
+	tmp := filepath.Join(h.dirs.SourceCache("reg"), "rev", ".tmp-in-progress")
+	if err := os.MkdirAll(tmp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := h.newManager()
+	if err := m.LoadIndexes(); err != nil {
+		t.Fatal(err)
+	}
+	if m.Current("reg") != sha {
+		t.Fatal("index not loaded")
+	}
+	if _, err := os.Stat(tmp); err != nil {
+		t.Fatal("LoadIndexes cleaned up a running daemon's extraction")
+	}
+	if err := os.Chmod(filepath.Join(h.dirs.SourceCache("reg"), "snapshots.json"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.LoadIndexes(); err == nil {
+		t.Fatal("unreadable index loaded")
 	}
 }

@@ -245,3 +245,31 @@ func TestManagerDefaults(t *testing.T) {
 		t.Fatalf("default getenv not used: %q", got)
 	}
 }
+
+func TestPruneEmptyDirs(t *testing.T) {
+	base := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(base, "a/b/c"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(base, "keep/file"), "x", 0o644)
+	if err := pruneEmptyDirs(base); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "a")); err == nil {
+		t.Fatal("empty tree kept")
+	}
+	if _, err := os.Stat(filepath.Join(base, "keep/file")); err != nil {
+		t.Fatal("non-empty directory removed")
+	}
+	if err := pruneEmptyDirs(filepath.Join(base, "missing")); err == nil {
+		t.Fatal("pruning a missing directory succeeded")
+	}
+	locked := filepath.Join(base, "locked")
+	if err := os.MkdirAll(filepath.Join(locked, "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	readOnly(t, locked)
+	if err := pruneEmptyDirs(base); err == nil {
+		t.Fatal("removing from a read-only directory succeeded")
+	}
+}

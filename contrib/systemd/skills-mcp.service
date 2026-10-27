@@ -1,0 +1,17 @@
+[Unit]
+Description=skills-mcp: agent skills served as MCP tools
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-%E/skills-mcp/env
+ExecStart=%h/.local/bin/skills-mcp server run
+Restart=on-failure
+RestartSec=5
+# SIGTERM reaches only the daemon, which drains submits and stops its own
+# git and validate processes; the whole sequence fits within TimeoutStopSec.
+KillMode=mixed
+TimeoutStopSec=60
+
+[Install]
+WantedBy=default.target

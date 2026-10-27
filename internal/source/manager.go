@@ -253,6 +253,21 @@ func cleanRevDir(dir string, idx Index) error {
 	return nil
 }
 
+// LoadIndexes reads every source's snapshot index without the startup
+// cleanup, for read-only use alongside a running daemon.
+func (m *Manager) LoadIndexes() error {
+	for _, st := range m.sources {
+		idx, err := readIndex(st.indexPath())
+		if err != nil {
+			return fmt.Errorf("source %s: %w", st.src.Name, err)
+		}
+		st.indexMu.Lock()
+		st.index = idx
+		st.indexMu.Unlock()
+	}
+	return nil
+}
+
 // SourceLock returns the source mutex that serializes Git commands on the
 // source's repository and change worktrees.
 func (m *Manager) SourceLock(name string) *sync.Mutex { return &m.byName[name].srcMu }

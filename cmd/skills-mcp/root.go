@@ -1,21 +1,20 @@
 package main
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
-	"github.com/alexgorbatchev/skills-mcp/internal/agent"
+
+	"github.com/alexgorbatchev/skills-mcp/internal/paths"
 )
 
-var (
-	version = "0.1.0"
-)
+// Injected at build time with -ldflags "-X main.version=<version>".
+var version = "dev"
 
 func newRootCommand() *cobra.Command {
+	var configPath string
 	rootCmd := &cobra.Command{
 		Use:          "skills-mcp",
-		Short:        "MCP server that serves agent skills from a Git repository as tools and prompts",
-		Long:         "skills-mcp is a command-line tool designed for MCP server that serves agent skills from a Git repository as tools and prompts.",
+		Short:        "Serve agent skills from a Git repository as MCP tools and prompts",
+		Long:         "skills-mcp serves agent skills from Git repositories to Claude Code, Codex, and pi as MCP tools and prompts, and lets agents push skill changes back.",
 		Version:      version,
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,
@@ -23,34 +22,30 @@ func newRootCommand() *cobra.Command {
 			return cmd.Help()
 		},
 	}
-
 	rootCmd.SetVersionTemplate("{{.Version}}\n")
+	rootCmd.CompletionOptions.DisableDefaultCmd = true
+	rootCmd.PersistentFlags().StringVar(&configPath, "config", "", "config file (default $XDG_CONFIG_HOME/skills-mcp/config.yaml)")
 
-	rootCmd.AddCommand(newStatusCommand())
-	rootCmd.AddCommand(newSkillCommand())
-
+	resolve := func() (paths.Dirs, string, error) {
+		dirs, err := paths.Resolve()
+		if err != nil {
+			return dirs, "", err
+		}
+		if configPath == "" {
+			return dirs, dirs.ConfigFile(), nil
+		}
+		return dirs, configPath, nil
+	}
+	rootCmd.AddCommand(
+		newServerCommand(resolve),
+		newCatalogCommand(resolve),
+		newBundleCommand(resolve),
+		newTokenCommand(resolve),
+		newSkillCommand(),
+	)
 	setupHelp(rootCmd)
-
 	return rootCmd
 }
 
-func newStatusCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "status",
-		Short: "Display system and environment status",
-		Long:  "Inspects and outputs the current system and runtime status.",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if agent.IsAgentMode() {
-				fmt.Fprintln(cmd.OutOrStdout(), "status: ready")
-				fmt.Fprintln(cmd.OutOrStdout(), "version: "+version)
-				return nil
-			}
-
-			fmt.Fprintln(cmd.OutOrStdout(), "[OK] System status: ready")
-			fmt.Fprintln(cmd.OutOrStdout(), "Version: "+version)
-			return nil
-		},
-	}
-	return cmd
-}
+// resolver returns the application directories and the config file path.
+type resolver func() (paths.Dirs, string, error)

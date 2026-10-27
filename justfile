@@ -1,46 +1,59 @@
 set dotenv-load := false
 
-# Default recipe: list available recipes
+# List available recipes
 default:
     @just --list
 
-# Run CLI in human mode (default)
+# Download module dependencies
+setup:
+    go mod download
+
+# Run the daemon in the foreground
 run *args:
+    go run ./cmd/skills-mcp server run {{args}}
+
+# Run the CLI with arguments
+cli *args:
     go run ./cmd/skills-mcp {{args}}
 
-# Run CLI in agent-facing mode
+# Run the CLI in agent-facing mode
 run-ai *args:
     AGENT=1 go run ./cmd/skills-mcp {{args}}
 
-# Run test suite
+# Run the test suite with the race detector
 test:
-    go test -v ./...
+    go test -race ./...
 
-# Build binary into bin/
+# Fail when any package is below 90% statement coverage
+coverage:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out=$(go test -cover ./...)
+    echo "$out"
+    echo "$out" | awk '/coverage:/ { gsub("%", "", $5); if ($5 + 0 < 90) { print "below 90%: " $2; bad = 1 } } END { exit bad }'
+
+# Build the binary into bin/
 build:
     mkdir -p bin
-    go build -o bin/skills-mcp ./cmd/skills-mcp
+    go build -ldflags "-X main.version=$(git describe --tags --always --dirty)" -o bin/skills-mcp ./cmd/skills-mcp
 
-# Install binary to GOPATH bin directory
+# Install the binary into GOBIN
 install:
-    go install ./cmd/skills-mcp
+    go install -ldflags "-X main.version=$(git describe --tags --always --dirty)" ./cmd/skills-mcp
 
-# Run static analysis and vet
+# Check module hygiene, formatting, and static analysis
 lint:
+    go mod tidy -diff
+    test -z "$(gofmt -l .)"
     go vet ./...
 
-# Alias for lint
-vet: lint
+# Run lint, tests, and the coverage gate
+check: lint test coverage
 
 # Format Go code
 fmt:
     go fmt ./...
 
-# Run static analysis and test suite in sequence
-check:
-    go vet ./...
-    go test -v ./...
-
-# Clean up build binaries and temporary files
+# Remove build output and scratch files
 clean:
-    rm -rf bin coverage.out .tmp dist
+    rm -rf bin .tmp dist

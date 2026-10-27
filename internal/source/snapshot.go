@@ -237,7 +237,35 @@ func filterBundle(dir, bundle string, src *config.Source) ([]string, []catalog.D
 			return nil, nil, fmt.Errorf("removing ignored file %s: %w", f, err)
 		}
 	}
+	if err := pruneEmptyDirs(base); err != nil {
+		return nil, nil, err
+	}
 	return kept, diags, nil
+}
+
+// pruneEmptyDirs removes directories left empty by ignore filtering.
+func pruneEmptyDirs(base string) error {
+	var dirs []string
+	err := filepath.WalkDir(base, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && p != base {
+			dirs = append(dirs, p)
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("listing %s: %w", base, err)
+	}
+	for _, d := range slices.Backward(dirs) {
+		if entries, err := os.ReadDir(d); err == nil && len(entries) == 0 {
+			if err := os.Remove(d); err != nil {
+				return fmt.Errorf("removing empty directory: %w", err)
+			}
+		}
+	}
+	return nil
 }
 
 // listFiles returns every regular file below base as sorted slash paths.
