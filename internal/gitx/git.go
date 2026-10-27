@@ -139,10 +139,12 @@ func (r PushResult) Accepted() bool {
 	return r.Parsed && strings.IndexByte("* +=", r.Flag) >= 0
 }
 
-// NonFastForward reports a rejection that a rebase can resolve.
+// NonFastForward reports a rejection that a rebase can resolve: the remote
+// moved (forward or backward) away from the expected base.
 func (r PushResult) NonFastForward() bool {
 	return r.Parsed && r.Flag == '!' &&
-		(strings.Contains(r.Summary, "(non-fast-forward)") || strings.Contains(r.Summary, "(fetch first)"))
+		(strings.Contains(r.Summary, "(non-fast-forward)") || strings.Contains(r.Summary, "(fetch first)") ||
+			strings.Contains(r.Summary, "(stale info)"))
 }
 
 // ParsePush finds the status line for ref in porcelain push output.

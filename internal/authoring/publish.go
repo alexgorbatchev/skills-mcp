@@ -34,8 +34,13 @@ func (s *Service) publish(ctx context.Context, c *change, progress func(string))
 		}
 		var out []byte
 		var pushErr error
+		// The lease makes the push a compare-and-swap: it lands only when the
+		// remote branch is exactly the change's base, so nothing between the
+		// remote tip and the base (for example commits someone removed with
+		// a force push) is ever republished unscanned.
+		lease := "--force-with-lease=" + repo.Ref() + ":" + rec.BaseRevision
 		s.withSource(rec.Source, func() {
-			out, pushErr = repo.Git.Run(ctx, repo.Dir, gitx.Opts{}, "push", "--porcelain", "origin", commit+":"+repo.Ref())
+			out, pushErr = repo.Git.Run(ctx, repo.Dir, gitx.Opts{}, "push", "--porcelain", lease, "origin", commit+":"+repo.Ref())
 		})
 		res := gitx.ParsePush(out, repo.Ref())
 		switch {

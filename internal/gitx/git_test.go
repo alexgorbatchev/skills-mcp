@@ -159,6 +159,7 @@ func TestParsePush(t *testing.T) {
 		{"up to date", "To x\n=\tabc:refs/heads/main\t[up to date]\nDone\n", true, true, false},
 		{"fetch first", "To x\n!\tabc:refs/heads/main\t[rejected] (fetch first)\nDone\n", true, false, true},
 		{"non-fast-forward", "!\tabc:refs/heads/main\t[rejected] (non-fast-forward)\n", true, false, true},
+		{"stale lease", "!\tabc:refs/heads/main\t[rejected] (stale info)\n", true, false, true},
 		{"remote rejected", "!\tabc:refs/heads/main\t[remote rejected] (hook declined)\n", true, false, false},
 		{"other ref", "*\tabc:refs/heads/other\t[new branch]\n", false, false, false},
 		{"empty", "", false, false, false},

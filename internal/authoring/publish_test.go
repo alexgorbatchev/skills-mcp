@@ -224,3 +224,36 @@ func TestDiscardReportsPublishedChange(t *testing.T) {
 		t.Fatalf("discard of a published change = %+v, %v", res, err)
 	}
 }
+
+func TestRewoundRemoteIsNotRepublished(t *testing.T) {
+	e := newEnv(t)
+	// X lands upstream and the daemon picks it up.
+	write(t, filepath.Join(e.remote.work, "skills/user/commit/leak.md"), "x\n")
+	x := e.remote.push("x")
+	if err := e.src.Refresh(context.Background(), "reg", sourceRefresh()); err != nil {
+		t.Fatal(err)
+	}
+	id := e.open()
+	if e.record(id).BaseRevision != x {
+		t.Fatal("change not based on x")
+	}
+	editGolang(t, e, id, "body", "agent")
+	// The owner removes X with a force push.
+	run(t, e.remote.work, "reset", "-q", "--hard", "HEAD~1")
+	run(t, e.remote.work, "push", "-q", "--force", "origin", "main")
+	rewound := e.remote.tip()
+
+	res, err := e.submit(id, "agent change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := gitCmd(e.remote.bare, "merge-base", "--is-ancestor", x, "refs/heads/main"); err == nil {
+		t.Fatalf("removed commit republished: %s", out)
+	}
+	if parent := run(t, e.remote.bare, "rev-parse", res.Commit+"^"); parent != rewound {
+		t.Fatalf("change not rebased onto the rewound tip: parent %s, want %s", parent, rewound)
+	}
+	if res.Publication.Attempts != 2 {
+		t.Fatalf("attempts = %d", res.Publication.Attempts)
+	}
+}

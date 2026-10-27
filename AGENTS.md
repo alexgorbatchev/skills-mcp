@@ -37,6 +37,6 @@ Go daemon and CLI that serves agent skills from Git repositories as MCP tools an
 - Always: for code changes that alter executable behavior, add or update meaningful behavioral tests. Keep at least 90% line and function coverage across the non-test source of each affected package (`just coverage`).
 - Always: update `skills/skills-mcp/SKILL.md` in the same change as any command, argument, option, default, environment variable, output, or side-effect change, and update its `last_modified`.
 - Always: keep `docs/internal/eng-designs/skills-mcp.md` consistent with the implementation when behavior or contracts change.
-- Never: force-push, push to a ref other than the source's tracked branch, or run git hooks from daemon code.
+- Never: force-push (the base-revision `--force-with-lease` compare-and-swap is the only allowed push form), push to a ref other than the source's tracked branch, or run git hooks from daemon code.
 - Never: commit or push private internal domains to github.com repositories.
 - Never: publish releases, tags, or packages without explicit user authorization.

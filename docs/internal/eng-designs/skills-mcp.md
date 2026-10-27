@@ -1,6 +1,6 @@
 ---
 created_on: 2026-10-26 10:13
-last_modified: 2026-10-26 19:45
+last_modified: 2026-10-26 20:05
 status: current
 ---
 
@@ -143,7 +143,7 @@ A go-sdk v1.8.0 stdio server with 50 registered tools uses 12.5 MB RSS after `to
 - Every JSON state file is written atomically (temporary file, `fsync`, rename).
 - Validation commands run from the trusted base snapshot, never from agent-modified files, and authoring cannot change them.
 - Content pushed to a source must pass that source's `deny_patterns` scan over added lines (binary included), added and renamed file paths, and the commit message. A source with `writable: true` and empty `deny_patterns` is a configuration error.
-- Publication never force-pushes.
+- Publication never force-pushes. Every push carries `--force-with-lease=refs/heads/<branch>:<base_revision>`, a compare-and-swap that lands only when the remote branch is exactly the change's base; with `HEAD^` equal to the base, the only possible update is a fast-forward by the change commit, so commits removed upstream are never republished.
 - Go 1.26, Cobra with `cobra-help-tree/v2`, `log/slog`, XDG directories, binaries in `bin/`, `--version` prints only the version string.
 - 90% test coverage, with behavioral tests only.
 
@@ -693,7 +693,7 @@ The tool handler acquires the change mutex and starts the pipeline in a goroutin
    6. Delete the verification directory after adding owner write permission.
    7. On any verification failure, run `git reset --soft <base_revision>`, clear `commit` and `message`, and fail.
 5. Publish, with at most three pushes per submit call:
-   1. Set `push_started` and persist the record. Run `git -C repo.git push --porcelain origin <commit>:refs/heads/<branch>`, then clear `push_started` once a ref status line has been parsed and its outcome below recorded. When no ref status line is parsed (timeout or transport failure), run 5.2's `Refresh` and `is-ancestor` check: when the commit is on the branch, clear `push_started` and go to 5.4; otherwise leave `push_started` set and fail the submit with Git's stderr. A `*`, ` `, `+`, or `=` flag for the ref is success: go to 5.4. A `!` flag with `(non-fast-forward)` or `(fetch first)` is a rejection: go to 5.2. Anything else fails the submit with Git's stderr.
+   1. Set `push_started` and persist the record. Run `git -C repo.git push --porcelain --force-with-lease=refs/heads/<branch>:<base_revision> origin <commit>:refs/heads/<branch>`, then clear `push_started` once a ref status line has been parsed and its outcome below recorded. When no ref status line is parsed (timeout or transport failure), run 5.2's `Refresh` and `is-ancestor` check: when the commit is on the branch, clear `push_started` and go to 5.4; otherwise leave `push_started` set and fail the submit with Git's stderr. A `*`, ` `, `+`, or `=` flag for the ref is success: go to 5.4. A `!` flag with `(non-fast-forward)`, `(fetch first)`, or `(stale info)` (the remote branch moved away from the base, forward or backward) is a rejection: go to 5.2. Anything else fails the submit with Git's stderr.
    2. Call `Refresh(source)`. When it returns an error, fail the submit with that error. When `git merge-base --is-ancestor <commit> refs/heads/<branch>` succeeds, the change is already published: go to 5.4.
    3. Set `rebase_onto` to the commit at `refs/heads/<branch>` and persist the record. Run `git -C <worktree> rebase --onto <rebase_onto> <base_revision>`, which replays only the change commit even when the upstream branch was force-pushed. On a nonzero exit, capture conflicting paths from `git diff --name-only -z --diff-filter=U` and stderr, run `git rebase --abort` when a rebase is in progress, clear `rebase_onto`, and fail the submit with `last_error` naming the new tip, the paths, and stderr; the agent discards the change and opens a new one. When the rebase exits 0 with `HEAD` equal to the new tip, the change already exists upstream: set `base_revision` to the new tip, clear `commit`, `message`, and `rebase_onto`, persist the record, and fail with `last_error` "change already applied upstream at <new tip>; discard it". Otherwise set `base_revision` to the new tip and `commit` to the rebased `HEAD`, clear `rebase_onto`, persist the record, repeat steps 3–4, and return to 5.1. When the third push of this call is rejected, the submit fails.
    4. Record `publication` with the pushes made in this call, set `state` to `submitted`, persist the record, and run the lifecycle cleanup. Then call `Refresh(source)` with its own 180-second deadline; when it fails, record its error in `publication.refresh_error`. Return success.
@@ -1039,7 +1039,7 @@ Reject implementations that:
 - Write to `path` sources.
 - Use go-git for any Git operation (its `plumbing/format/gitignore` package is the only permitted import), or accept unified diffs.
 - Commit once per mutation instead of once per change.
-- Force-push, open pull requests, or push to any ref other than `refs/heads/<branch>`.
+- Force-push other than the base-revision lease, open pull requests, or push to any ref other than `refs/heads/<branch>`.
 - Push a commit that has not passed every step of submit verification.
 - Store `repo.git` under `$XDG_CACHE_HOME`.
 - Run Git without the prompt-suppressing environment or without a timeout.
@@ -1517,3 +1517,9 @@ Outcome: Q11A2 restated as a generic, configuration-driven `prepare` step (like 
 | Unconfirmed pushes | `push_started` stays set after a push with no confirmed outcome, so the next reconciliation fetches again. | Specified in section 8 |
 | Discard of a published change | `skill_change_discard` reports `submitted` with the commit when the change turns out to be published. | Specified in section 10 |
 | Doc drift | Undo of a failed stage without Git; shutdown waits only for submit pipelines; cleanup wording for unusable sources. | Specified in sections 8, 9 |
+
+### A.21 Implementation review 5: findings applied
+
+| Topic | Revision | Status |
+|---|---|---|
+| Rewound remotes | Pushes carry a lease on `base_revision`; a remote rewound below the base (or moved, or deleted) rejects the push as stale, and the change is rebased onto the real tip and re-verified, so removed commits are never republished unscanned. | Specified in sections 3, 8, 13 |
