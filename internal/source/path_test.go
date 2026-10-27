@@ -251,3 +251,26 @@ func TestInstalledDependenciesAndIgnoredLinksDoNotRefuse(t *testing.T) {
 		t.Fatalf("bundle validate = %v", problems)
 	}
 }
+
+func TestIgnoredSymlinkSkillFileRefusesOnlyItsBundle(t *testing.T) {
+	real := t.TempDir()
+	writeFile(t, filepath.Join(real, "agent/good/SKILL.md"), skillDoc("good", ""), 0o644)
+	writeFile(t, filepath.Join(real, "agent/bad/real.md"), skillDoc("bad", ""), 0o644)
+	writeFile(t, filepath.Join(real, "agent/bad/.registry-ignore"), "SKILL.md\n", 0o644)
+	if err := os.Symlink("real.md", filepath.Join(real, "agent/bad/SKILL.md")); err != nil {
+		t.Fatal(err)
+	}
+	src := pathSource(real)
+	src.IgnoreFile = ".registry-ignore"
+	h := newHarness(t, src)
+	h.init()
+	h.refresh("local") // must not fail the whole catalog
+	v := h.lastView(config.ClaudeCode)
+	if v.Skill("good") == nil || diagCodes(v.Diagnostics) != "missing_skill_md@agent/bad" {
+		t.Fatalf("skills = %+v, diagnostics = %s", v.Skills, diagCodes(v.Diagnostics))
+	}
+	problems, err := catalog.ValidateDir(filepath.Join(real, "agent/bad"), src, os.LookupEnv)
+	if err != nil || len(problems) == 0 || !strings.Contains(strings.Join(problems, "\n"), "missing_skill_md") {
+		t.Fatalf("bundle validate = %v, %v", problems, err)
+	}
+}

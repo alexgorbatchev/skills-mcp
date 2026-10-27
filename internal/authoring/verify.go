@@ -93,15 +93,9 @@ func (s *Service) checkCatalog(rec *Record, treeDir string, treeRecord *catalog.
 		}
 		return append(out, snap)
 	}
-	baseViews, err := s.opts.Sources.Cache().Views(withSource(baseSnap))
-	if err != nil {
-		return err
-	}
+	baseViews := s.opts.Sources.Cache().Views(withSource(baseSnap))
 	var fresh catalog.Cache // verification catalogs never enter the shared cache
-	newViews, err := fresh.Views(withSource(commitSnap))
-	if err != nil {
-		return err
-	}
+	newViews := fresh.Views(withSource(commitSnap))
 	var problems []string
 	for _, h := range config.Harnesses {
 		problems = append(problems, compareViews(rec, baseViews[h], newViews[h])...)

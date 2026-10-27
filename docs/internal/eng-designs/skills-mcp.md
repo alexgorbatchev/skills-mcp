@@ -1,6 +1,6 @@
 ---
 created_on: 2026-10-26 10:13
-last_modified: 2026-10-26 19:24
+last_modified: 2026-10-26 19:45
 status: current
 ---
 
@@ -602,7 +602,7 @@ On SIGTERM or SIGINT, within the unit's 60-second `TimeoutStopSec`:
 
 1. Cancel the process-wide shutdown context. Every submit pipeline checks it before each step; once it is cancelled, a pipeline records `last_error` "interrupted by shutdown" under the change mutex it owns and starts nothing new. The refresh, watch, sweep, and maintenance loops stop scheduling work; a refresh already running continues on the kill context and is stopped in step 4.
 2. Close the listener, close every MCP session through each harness server's `Sessions()` and `ServerSession.Close()` so standalone GET streams end, and call `http.Server.Shutdown` with a 5-second deadline followed by `http.Server.Close()`. Stop the refresh loop, watchers, sweep, and maintenance timer.
-3. Wait up to 30 seconds for running submit pipelines and Git commands.
+3. Wait up to 30 seconds for running submit pipelines. Background refreshes are not waited for: an interrupted fetch or extraction is crash-safe and repeats on the next start.
 4. Kill the process group of every remaining child and wait up to 10 more seconds for the pipeline goroutines to record their own failures.
 5. Release the lock and exit 0.
 
@@ -656,7 +656,7 @@ type ChangeTransition =
 
 - `skill_change_open` fails with "source <name> has no snapshot" when the source has no `repo.git` or no `current`. Otherwise it adds a worktree on a new change branch from the source's current tip and records the endpoint's harness. The record is written before the worktree is added. When `git worktree add` fails or times out, the change is set to `discarded` with `last_error` carrying Git's stderr, lifecycle cleanup runs, and the tool returns the error. A `change_id` may be used from any harness endpoint; the recorded harness governs `{harness}` expansion.
 - Every mutation first reconciles the change (see [Change reconciliation](#change-reconciliation)). A discard, including a TTL discard, runs only reconciliation steps 1 and 4 (missing worktree, published detection) and then the lifecycle cleanup even when other repairs would fail. A mutation then validates its input and resulting content, adds its bundle to `touched_bundles`, and persists the record before writing any file.
-- Every mutation writes through an `os.Root` opened at the worktree root, using the repo-relative path, to a temporary file in the target directory that is renamed over the target, and then runs `git add -- <path>` for the written path. When `git add` fails, the write is undone with `git restore --worktree -- <path>` for a path with an index entry, or removal of a new file, and the tool returns the error. A temporary file is created with the target's existing permission bits, or `0644` for a new file, so the Git mode is preserved. A mutation targeting a path that `git check-ignore` reports as ignored, or a file named `.gitattributes`, is rejected.
+- Every mutation writes through an `os.Root` opened at the worktree root, using the repo-relative path, to a temporary file in the target directory that is renamed over the target, and then runs `git add -- <path>` for the written path. When `git add` fails, the write is undone without Git (the index may be why staging failed): the previous bytes are written back, or a new file is removed, and the tool returns the error. A temporary file is created with the target's existing permission bits, or `0644` for a new file, so the Git mode is preserved. A mutation targeting a path that `git check-ignore` reports as ignored, or a file named `.gitattributes`, is rejected.
 - A mutation on a change whose `commit` is set first runs `git reset --soft <base_revision>` and clears `commit` and `message`; the staged content is kept.
 - Mutations update `updated_at`.
 - On `submitted` or `discarded`, the record is persisted first, then `git worktree remove -f -f` (which also removes a locked worktree), `git worktree prune`, and `git branch -D <branch>` run. Each cleanup step tolerates an already-removed target. A cleanup failure is logged and retried by the hourly sweep.
@@ -906,7 +906,7 @@ interface ChangeSubmitResult { change_id: string; commit: string; message: strin
 
 // skill_change_discard
 interface ChangeDiscardArgs { change_id: string }
-interface ChangeDiscardResult { change_id: string; state: 'discarded' }
+interface ChangeDiscardResult { change_id: string; state: 'discarded' | 'submitted'; commit?: string }  // 'submitted' when the change turned out to be published already
 ```
 
 `ChangeReadText` and `ChangeDiffText`, chunked per [Skill tool call](#skill-tool-call) with `sha` in place of `revision`:
@@ -1503,8 +1503,17 @@ Outcome: Q11A2 restated as a generic, configuration-driven `prepare` step (like 
 
 | Topic | Revision | Status |
 |---|---|---|
-| Unusable sources | A change whose source was removed, became a path source, became read-only, or lost its deny patterns is refused; startup and the sweep never touch Git for it and discard it at expiry. | Specified in section 9 |
+| Unusable sources | A change whose source was removed, became a path source, became read-only, or lost its deny patterns is refused; startup and the sweep discard it at expiry without reconciling it; the sweep's worktree and branch cleanup still runs when the source is a git source with a clone. | Specified in section 9 |
 | Empty deny patterns | The deny scan fails closed without patterns. | Specified in section 9 |
 | Installed dependencies | `node_modules` is always excluded; links excluded by ignore rules do not refuse a bundle, in extraction and `bundle validate` alike. | Specified in section 8 |
 | Refresh waits | The refresh mutex wait honors the caller's deadline. | Specified in section 8 |
 | Repair logging | Every reconciliation repair is logged at `info` with the change ID. | Implemented and tested |
+
+### A.20 Implementation review 4: findings applied
+
+| Topic | Revision | Status |
+|---|---|---|
+| Unreadable `SKILL.md` | A bundle whose `SKILL.md` is unreadable, or is a link excluded by ignore rules, is refused with `missing_skill_md`; one such bundle never fails the catalog, the daemon's startup, or submit verification. | Implemented and tested |
+| Unconfirmed pushes | `push_started` stays set after a push with no confirmed outcome, so the next reconciliation fetches again. | Specified in section 8 |
+| Discard of a published change | `skill_change_discard` reports `submitted` with the commit when the change turns out to be published. | Specified in section 10 |
+| Doc drift | Undo of a failed stage without Git; shutdown waits only for submit pipelines; cleanup wording for unusable sources. | Specified in sections 8, 9 |

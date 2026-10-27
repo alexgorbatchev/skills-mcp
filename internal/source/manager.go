@@ -684,10 +684,7 @@ func (m *Manager) rebuildFrom(snaps []catalog.Snapshot, gens map[string]uint64) 
 	}
 	m.stale = false
 	m.builtGen = gens
-	views, err := m.cache.Views(snaps)
-	if err != nil {
-		return err
-	}
+	views := m.cache.Views(snaps)
 	m.views = views
 	m.logDiagnostics(views)
 	if m.opts.OnViews != nil {

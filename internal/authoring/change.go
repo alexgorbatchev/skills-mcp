@@ -242,16 +242,31 @@ func (s *Service) Open(_ context.Context, harness config.HarnessID, sourceName, 
 	return OpenResult{ChangeID: id, Source: sourceName, BaseRevision: base}, nil
 }
 
-// Discard discards an open change.
-func (s *Service) Discard(reqCtx context.Context, id string) error {
+// DiscardResult is skill_change_discard's response. State is "submitted"
+// when the change turned out to be published already.
+type DiscardResult struct {
+	ChangeID string  `json:"change_id"`
+	State    string  `json:"state"`
+	Commit   *string `json:"commit,omitempty"`
+}
+
+// Discard discards an open change, or reports that it was already published.
+func (s *Service) Discard(reqCtx context.Context, id string) (DiscardResult, error) {
 	c, err := s.lockOpen(reqCtx, id)
 	if err != nil {
-		return err
+		return DiscardResult{}, err
 	}
 	defer c.release()
 	ctx, cancel := s.detached()
 	defer cancel()
-	return s.discard(ctx, c, "", reconcileNormal)
+	if err := s.discard(ctx, c, "", reconcileNormal); err != nil {
+		return DiscardResult{}, err
+	}
+	res := DiscardResult{ChangeID: id, State: c.rec.State}
+	if c.rec.State == StateSubmitted {
+		res.Commit = c.rec.Commit
+	}
+	return res, nil
 }
 
 // discard runs the reduced reconciliation (missing worktree, published

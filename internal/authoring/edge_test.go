@@ -51,10 +51,10 @@ func TestWrongStateAndUnknownChange(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
 	id := e.open()
-	if err := e.svc.Discard(ctx, id); err != nil {
+	if _, err := e.svc.Discard(ctx, id); err != nil {
 		t.Fatal(err)
 	}
-	mustErr(t, e.svc.Discard(ctx, id), "is discarded")
+	mustErr(t, discardErr(e.svc.Discard(ctx, id)), "is discarded")
 	_, err := e.submit(id, "m")
 	mustErr(t, err, "is discarded")
 	_, err = e.svc.Read(ctx, ReadArgs{ChangeID: id, Bundle: "skills/agent/golang"}, 1000)
@@ -65,7 +65,7 @@ func TestWrongStateAndUnknownChange(t *testing.T) {
 	mustErr(t, err, "unknown change")
 	_, err = e.svc.Create(ctx, CreateArgs{ChangeID: "chg_0000000000000002"})
 	mustErr(t, err, "unknown change")
-	mustErr(t, e.svc.Discard(ctx, "chg_0000000000000002"), "unknown change")
+	mustErr(t, discardErr(e.svc.Discard(ctx, "chg_0000000000000002")), "unknown change")
 }
 
 func TestWriteOverDirectoryAndReadErrors(t *testing.T) {
@@ -225,7 +225,7 @@ func TestPushFailureWithReachableRemote(t *testing.T) {
 	_, err := e.submit(id, "m")
 	mustErr(t, err, "push failed")
 	rec := e.record(id)
-	if rec.PushStarted || rec.State != StateOpen {
+	if !rec.PushStarted || rec.State != StateOpen {
 		t.Fatalf("record = %+v", rec)
 	}
 	run(t, repo, "config", "--unset", "remote.origin.pushurl")

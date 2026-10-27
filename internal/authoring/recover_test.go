@@ -59,7 +59,7 @@ func TestExpiryAndSweep(t *testing.T) {
 	e := newEnv(t)
 	open := e.open()
 	done := e.open()
-	if err := e.svc.Discard(context.Background(), done); err != nil {
+	if _, err := e.svc.Discard(context.Background(), done); err != nil {
 		t.Fatal(err)
 	}
 	e.clock.advance(25 * time.Hour)
@@ -90,7 +90,7 @@ func TestExpiryAndSweep(t *testing.T) {
 func TestSweepRetriesCleanup(t *testing.T) {
 	e := newEnv(t)
 	id := e.open()
-	if err := e.svc.Discard(context.Background(), id); err != nil {
+	if _, err := e.svc.Discard(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
 	// Simulate a cleanup that failed: the branch is still there.

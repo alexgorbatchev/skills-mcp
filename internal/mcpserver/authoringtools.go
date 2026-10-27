@@ -180,13 +180,14 @@ func (s *Servers) addAuthoringTools(h config.HarnessID, srv *mcp.Server) {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "skill_change_discard",
-		Description: "Discard a change and its unpushed edits.",
+		Description: "Discard a change and its unpushed edits. The result's state is \"submitted\" when the change turns out to be published already.",
 		InputSchema: object([]string{"change_id"}, map[string]*jsonschema.Schema{"change_id": changeID}),
 		Annotations: destructive,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, a changeArgs) (*mcp.CallToolResult, any, error) {
-		if err := svc.Discard(ctx, a.ChangeID); err != nil {
+		res, err := svc.Discard(ctx, a.ChangeID)
+		if err != nil {
 			return nil, nil, err
 		}
-		return jsonResult(map[string]string{"change_id": a.ChangeID, "state": authoring.StateDiscarded})
+		return jsonResult(res)
 	})
 }

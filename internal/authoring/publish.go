@@ -90,7 +90,8 @@ func (s *Service) unconfirmedPush(ctx context.Context, c *change, commit string,
 	if s.onBranch(checkCtx, rec, commit) {
 		return s.finishPublish(checkCtx, c, commit, pushes)
 	}
-	rec.PushStarted = false
+	// The push may still land after this fetch; push_started stays set so
+	// the next reconciliation fetches again before deciding.
 	return fmt.Errorf("push failed: %w", pushErr)
 }
 

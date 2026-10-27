@@ -150,7 +150,7 @@ func TestSweepStopsWhenContextEnds(t *testing.T) {
 func TestRecoverSkipsTerminalChanges(t *testing.T) {
 	e := newEnv(t)
 	id := e.open()
-	if err := e.svc.Discard(context.Background(), id); err != nil {
+	if _, err := e.svc.Discard(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
 	e.start()
@@ -233,5 +233,5 @@ func TestKilledDaemonFailsOperations(t *testing.T) {
 	if rec := e.record(id); rec.LastError == nil {
 		t.Fatal("pipeline failure not recorded")
 	}
-	mustErr(t, e.svc.Discard(ctx, id), "canceled")
+	mustErr(t, discardErr(e.svc.Discard(ctx, id)), "canceled")
 }

@@ -223,9 +223,8 @@ func TestCacheAccessor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	views, err := h.m.Cache().Views(snaps)
-	if err != nil || views[config.ClaudeCode].Skill("a") == nil {
-		t.Fatalf("Cache().Views = %v, %v", views, err)
+	if views := h.m.Cache().Views(snaps); views[config.ClaudeCode].Skill("a") == nil {
+		t.Fatalf("Cache().Views = %v", views)
 	}
 }
 

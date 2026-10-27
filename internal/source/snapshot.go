@@ -247,8 +247,15 @@ func filterBundle(dir, bundle string, src *config.Source, specials []special) ([
 	// rules exclude them, matching `bundle validate`.
 	for _, sp := range specials {
 		rel, ok := strings.CutPrefix(sp.path, bundle+"/")
-		if ok && !rules.Excluded(rel) {
+		switch {
+		case !ok:
+		case !rules.Excluded(rel):
 			diags = append(diags, specialDiagnostic(src, sp, bundle, rel))
+		case rel == catalog.SkillFile:
+			diags = append(diags, catalog.Diagnostic{
+				Code: catalog.CodeMissingSkillMD, Source: src.Name, Bundle: bundle, File: rel,
+				Message: "ignore rules match SKILL.md",
+			})
 		}
 	}
 	for _, f := range files {

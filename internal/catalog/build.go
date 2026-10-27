@@ -80,48 +80,46 @@ func (c *Cache) Drop(source, revision string) {
 	delete(c.entries, cacheKey{source, revision})
 }
 
-func (c *Cache) parsed(snap Snapshot) (map[string]*parsedBundle, error) {
+func (c *Cache) parsed(snap Snapshot) map[string]*parsedBundle {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	key := cacheKey{snap.Source.Name, snap.Revision}
 	if got, ok := c.entries[key]; ok {
-		return got, nil
+		return got
 	}
-	got, err := ParseSnapshot(snap)
-	if err != nil {
-		return nil, err
-	}
+	got := parseSnapshot(snap)
 	if c.entries == nil {
 		c.entries = map[cacheKey]map[string]*parsedBundle{}
 	}
 	c.entries[key] = got
-	return got, nil
+	return got
 }
 
-// ParseSnapshot parses every bundle of a snapshot without caching.
-func ParseSnapshot(snap Snapshot) (map[string]*parsedBundle, error) {
+// parseSnapshot parses every bundle of a snapshot. A bundle that cannot be
+// parsed is refused with a diagnostic; it never fails the whole catalog.
+func parseSnapshot(snap Snapshot) map[string]*parsedBundle {
 	rule := PrefixRule{Enabled: snap.Source.AuthorPrefix, Except: snap.Source.AuthorPrefixExcept}
 	out := map[string]*parsedBundle{}
 	for _, bundle := range snap.Record.Bundles {
-		pb, err := parseBundle(snap, bundle, rule)
-		if err != nil {
-			return nil, err
-		}
-		out[bundle] = pb
+		out[bundle] = parseBundle(snap, bundle, rule)
 	}
-	return out, nil
+	return out
 }
 
-func parseBundle(snap Snapshot, bundle string, rule PrefixRule) (*parsedBundle, error) {
+func parseBundle(snap Snapshot, bundle string, rule PrefixRule) *parsedBundle {
 	dirName := path.Base(bundle)
 	pb := &parsedBundle{key: dirName, diags: snap.Record.BundleDiagnostics(bundle)}
 	baseDir := filepath.Join(snap.Root, filepath.FromSlash(bundle))
 	content, err := os.ReadFile(filepath.Join(baseDir, SkillFile))
 	if err != nil {
-		if len(pb.diags) > 0 {
-			return pb, nil // a symlink or submodule entry has no SKILL.md to read
+		// One unreadable bundle is refused; it never fails the whole catalog.
+		if len(pb.diags) == 0 {
+			pb.diags = append(pb.diags, Diagnostic{
+				Code: CodeMissingSkillMD, Source: snap.Source.Name, Revision: snap.Revision,
+				Bundle: bundle, File: SkillFile, Message: "SKILL.md cannot be read",
+			})
 		}
-		return nil, fmt.Errorf("reading %s/%s: %w", bundle, SkillFile, err)
+		return pb
 	}
 	parsed, issues := ParseSkill(content, dirName, rule)
 	pb.key = parsed.ServedName
@@ -132,7 +130,7 @@ func parseBundle(snap Snapshot, bundle string, rule PrefixRule) (*parsedBundle, 
 		})
 	}
 	if len(pb.diags) > 0 {
-		return pb, nil
+		return pb
 	}
 	files := slices.DeleteFunc(slices.Clone(snap.Record.Files[bundle]), func(f string) bool { return f == SkillFile })
 	pb.skill = &Skill{
@@ -146,7 +144,7 @@ func parseBundle(snap Snapshot, bundle string, rule PrefixRule) (*parsedBundle, 
 		Body:        parsed.Body,
 		Files:       files,
 	}
-	return pb, nil
+	return pb
 }
 
 type candidate struct {
@@ -156,20 +154,16 @@ type candidate struct {
 }
 
 // Views builds every harness view from the snapshots, in source order.
-func (c *Cache) Views(snaps []Snapshot) (map[config.HarnessID]*View, error) {
+func (c *Cache) Views(snaps []Snapshot) map[config.HarnessID]*View {
 	parsed := make([]map[string]*parsedBundle, len(snaps))
 	for i, snap := range snaps {
-		p, err := c.parsed(snap)
-		if err != nil {
-			return nil, fmt.Errorf("source %s: %w", snap.Source.Name, err)
-		}
-		parsed[i] = p
+		parsed[i] = c.parsed(snap)
 	}
 	views := map[config.HarnessID]*View{}
 	for _, h := range config.Harnesses {
 		views[h] = buildView(h, snaps, parsed)
 	}
-	return views, nil
+	return views
 }
 
 func buildView(h config.HarnessID, snaps []Snapshot, parsed []map[string]*parsedBundle) *View {

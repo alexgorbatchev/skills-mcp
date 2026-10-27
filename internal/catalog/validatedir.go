@@ -61,8 +61,11 @@ func ValidateDir(dir string, src *config.Source, getenv func(string) (string, bo
 	}
 	rules := NewIgnoreRules(src.IgnoreFile, ignoreFiles, keep)
 	for _, rel := range links {
-		if !rules.Excluded(rel) {
+		switch {
+		case !rules.Excluded(rel):
 			problems = append(problems, fmt.Sprintf("%s: %s: symbolic links are not served", CodeSymlink, rel))
+		case rel == SkillFile:
+			problems = append(problems, fmt.Sprintf("%s: %s: ignore rules match SKILL.md", CodeMissingSkillMD, rel))
 		}
 	}
 	ctx := TemplateContext{Vars: map[string]string{}, Env: src.Template.Env, Getenv: getenv}

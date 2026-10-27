@@ -81,10 +81,7 @@ func TestViews(t *testing.T) {
 	}, Diagnostic{Code: CodeSymlink, Source: "reg", Revision: "rev1", Bundle: "skills/agent/linked", File: "linked", Message: "symlink"})
 
 	var cache Cache
-	views, err := cache.Views([]Snapshot{snap})
-	if err != nil {
-		t.Fatal(err)
-	}
+	views := cache.Views([]Snapshot{snap})
 	tests := []struct {
 		harness config.HarnessID
 		skills  string
@@ -135,10 +132,7 @@ func TestViewsDuplicatesAndPrecedence(t *testing.T) {
 		{path: "skills/agent/dup", content: skill("dup", "three")},
 	})
 	var cache Cache
-	views, err := cache.Views([]Snapshot{a, b})
-	if err != nil {
-		t.Fatal(err)
-	}
+	views := cache.Views([]Snapshot{a, b})
 	v := views[config.ClaudeCode]
 	if got := names(v); got != "kept:model:first,unique:model:second" {
 		t.Fatalf("skills = %s", got)
@@ -161,10 +155,7 @@ func TestViewsHarnessRootReplacesRefused(t *testing.T) {
 		{path: "harnesses/pi/skills/tool", content: skill("tool", "")},
 	})
 	var cache Cache
-	views, err := cache.Views([]Snapshot{snap})
-	if err != nil {
-		t.Fatal(err)
-	}
+	views := cache.Views([]Snapshot{snap})
 	if views[config.Pi].Skill("tool") != nil || codes(views[config.Pi].Diagnostics) != "invalid_description@harnesses/pi/skills/tool" {
 		t.Fatalf("pi view = %s / %s", names(views[config.Pi]), codes(views[config.Pi].Diagnostics))
 	}
@@ -177,18 +168,16 @@ func TestCacheReuseAndDrop(t *testing.T) {
 	src := registrySource("reg")
 	snap := newSnapshot(t, src, "r", []fixtureBundle{{path: "skills/agent/a", content: skill("a", "first")}})
 	var cache Cache
-	if _, err := cache.Views([]Snapshot{snap}); err != nil {
-		t.Fatal(err)
-	}
+	cache.Views([]Snapshot{snap})
 	if err := os.WriteFile(filepath.Join(snap.Root, "skills/agent/a", SkillFile), []byte(skill("a", "second")), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	views, _ := cache.Views([]Snapshot{snap})
+	views := cache.Views([]Snapshot{snap})
 	if views[config.ClaudeCode].Skill("a").Description != "first" {
 		t.Fatal("cache not reused")
 	}
 	cache.Drop("reg", "r")
-	views, _ = cache.Views([]Snapshot{snap})
+	views = cache.Views([]Snapshot{snap})
 	if views[config.ClaudeCode].Skill("a").Description != "second" {
 		t.Fatal("Drop did not invalidate")
 	}
@@ -196,10 +185,14 @@ func TestCacheReuseAndDrop(t *testing.T) {
 
 func TestViewsMissingSkillFile(t *testing.T) {
 	src := registrySource("reg")
-	snap := newSnapshot(t, src, "r", []fixtureBundle{{path: "skills/agent/gone"}})
+	snap := newSnapshot(t, src, "r", []fixtureBundle{
+		{path: "skills/agent/gone"},
+		{path: "skills/agent/ok", content: skill("ok", "fine")},
+	})
 	var cache Cache
-	if _, err := cache.Views([]Snapshot{snap}); err == nil || !strings.Contains(err.Error(), "source reg") {
-		t.Fatalf("error = %v", err)
+	v := cache.Views([]Snapshot{snap})[config.ClaudeCode]
+	if v.Skill("ok") == nil || codes(v.Diagnostics) != "missing_skill_md@skills/agent/gone" {
+		t.Fatalf("skills = %s, diagnostics = %s", names(v), codes(v.Diagnostics))
 	}
 }
 

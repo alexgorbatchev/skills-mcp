@@ -92,10 +92,7 @@ func newCatalogCommand(resolve resolver) *cobra.Command {
 			if len(snaps) == 0 {
 				return errors.New("no snapshots yet; run `skills-mcp server run` first")
 			}
-			views, err := m.Cache().Views(snaps)
-			if err != nil {
-				return err
-			}
+			views := m.Cache().Views(snaps)
 			return printCatalog(cmd.OutOrStdout(), cmd.ErrOrStderr(), harnesses, views)
 		},
 	}

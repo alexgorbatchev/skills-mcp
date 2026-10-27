@@ -102,11 +102,7 @@ func (s *Servers) skillAt(h config.HarnessID, current *catalog.Skill, revision s
 	if err != nil {
 		return nil, errReload
 	}
-	views, err := s.opts.Sources.Cache().Views([]catalog.Snapshot{snap})
-	if err != nil {
-		return nil, errReload
-	}
-	sk := views[h].Skill(current.Name)
+	sk := s.opts.Sources.Cache().Views([]catalog.Snapshot{snap})[h].Skill(current.Name)
 	if sk == nil {
 		return nil, errReload
 	}

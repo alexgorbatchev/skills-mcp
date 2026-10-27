@@ -59,11 +59,9 @@ func TestRebaseConflict(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(e.worktree(id), ".git")); err != nil {
 		t.Fatal("worktree damaged")
 	}
-	if err := e.svc.Discard(context.Background(), id); err != nil {
-		t.Fatal(err)
-	}
-	if e.record(id).State != StateDiscarded {
-		t.Fatal("discard failed")
+	res, err := e.svc.Discard(context.Background(), id)
+	if err != nil || res.State != StateDiscarded || res.Commit != nil {
+		t.Fatalf("discard = %+v, %v", res, err)
 	}
 }
 
@@ -207,5 +205,22 @@ func TestPostPushRefreshFailureRecorded(t *testing.T) {
 	}
 	if e.record(id).State != StateSubmitted {
 		t.Fatal("published change not submitted")
+	}
+}
+
+func TestDiscardReportsPublishedChange(t *testing.T) {
+	e := newEnv(t)
+	id := e.open()
+	editGolang(t, e, id, "body", "agent")
+	c := commitOutsidePipeline(t, e, id)
+	commit := *c.rec.Commit
+	run(t, e.src.Repo("reg").Dir, "push", "-q", "origin", commit+":refs/heads/main")
+	c.rec.PushStarted = true // a push whose outcome was never confirmed
+	if err := e.svc.store.persist(c.rec); err != nil {
+		t.Fatal(err)
+	}
+	res, err := e.svc.Discard(context.Background(), id)
+	if err != nil || res.State != StateSubmitted || res.Commit == nil || *res.Commit != commit {
+		t.Fatalf("discard of a published change = %+v, %v", res, err)
 	}
 }
