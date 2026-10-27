@@ -1,6 +1,6 @@
 ---
 created_on: 2026-10-26 10:13
-last_modified: 2026-10-26 17:14
+last_modified: 2026-10-26 17:21
 status: current
 ---
 
@@ -230,14 +230,14 @@ one mcp.Server per harness, mounted at /mcp/<harness> (stateful Streamable HTTP,
 | Path | Owner | Contents |
 |---|---|---|
 | `$XDG_CONFIG_HOME/skills-mcp/config.yaml` | user | Daemon configuration, see `Config`. Local only; never committed. |
-| `$XDG_CONFIG_HOME/skills-mcp/env` | user | Optional `KEY=value` lines loaded by the systemd unit with `EnvironmentFile=-`: `PATH` (must include the `validate` interpreter, for example `bun`), `SSH_AUTH_SOCK`, and values for `template.env` names. |
+| `$XDG_CONFIG_HOME/skills-mcp/env` | user | Optional `KEY=value` lines loaded by the systemd unit with `EnvironmentFile=-`: `PATH` (must include the `validate` and `prepare` interpreters, for example `bun` in `~/.bun/bin`), `SSH_AUTH_SOCK`, and values for `template.env` names. |
 | `$XDG_CONFIG_HOME/skills-mcp/token` | daemon | Bearer token: exactly 64 lowercase hex characters (32 random bytes), mode `0600`. Created by `serve` or `token` when absent: the token is written and synced to a temporary file with mode `0600` in the same directory, then `link`ed to the final name; on `EEXIST` the temporary file is removed and the existing file is used. Every read rejects content that is not exactly 64 hex characters (one trailing newline allowed) or a mode other than `0600`, and exits with status 1. |
 | `$XDG_STATE_HOME/skills-mcp/lock` | daemon | `flock` held by `serve` for its lifetime. |
 | `$XDG_STATE_HOME/skills-mcp/sources/<source>/repo.git` | daemon | Bare clone of a `git` source, including change branches. Cloned into `repo.git.tmp-<random>` and renamed into place; leftover `repo.git.tmp-*` directories are deleted at startup. |
 | `$XDG_STATE_HOME/skills-mcp/changes/.quarantine/` | daemon | Unparsable `change.json` files moved aside at startup, named `<change_id>.json`. |
 | `$XDG_STATE_HOME/skills-mcp/changes/<change_id>/change.json` | daemon | `ChangeRecord`. |
 | `$XDG_STATE_HOME/skills-mcp/changes/<change_id>/worktree/` | daemon | Git worktree of `repo.git` on branch `skills-mcp/change/<change_id>`. |
-| `$XDG_CACHE_HOME/skills-mcp/sources/<source>/rev/<revision>/` | daemon | Rendered, read-only snapshot of `<revision>`. Directories `0555`, files `0444`; files with Git mode `100755` (or an executable bit on disk for `path` sources) are `0555`. |
+| `$XDG_CACHE_HOME/skills-mcp/sources/<source>/rev/<revision>/` | daemon | Rendered, read-only snapshot of `<revision>`. Directories `0555`, files `0444`; files with Git mode `100755` (or an executable bit on disk for `path` sources) are `0555`; `prepare` output files are `0555` when their owner-execute bit is set after `prepare`, `0444` otherwise. |
 | `$XDG_CACHE_HOME/skills-mcp/sources/<source>/rev/<revision>.render.json` | daemon | `RenderRecord` for the snapshot. Written before the snapshot directory is renamed into place. |
 | `$XDG_CACHE_HOME/skills-mcp/sources/<source>/rev/.tmp-<revision>-<random>/` | daemon | In-progress extraction from `os.MkdirTemp`; deleted at startup when present. |
 | `$XDG_CACHE_HOME/skills-mcp/sources/<source>/rev/.tmp-path-<random>/` | daemon | In-progress `path` source copy before its revision is known; deleted at startup when present. |
@@ -277,7 +277,7 @@ interface RootConfig {
 }
 
 interface PrepareRule {
-  when_file: string;              // file name; the rule runs in every bundle directory (at any depth) that contains it
+  when_file: string;              // file name; the rule runs in every source directory inside a bundle (at any depth) that contains it, computed before any rule runs
   run: string[];                  // argv, run with that directory as the working directory; non-empty
   keep: string[];                 // paths relative to that directory exempt from ignore_file filtering, e.g. a lockfile
   timeout: string;                // Go duration, default "300s"
@@ -304,7 +304,8 @@ interface GitSource extends SourceBase {
   url: string;
   branch: string;
   writable: boolean;
-  validate: string[];             // argv run per touched bundle on submit; "{bundle_dir}" is replaced; [] disables
+  validate: string[];             // argv run per touched bundle on submit, from rev/<base_revision>/; "{bundle_dir}" is replaced; [] disables.
+                                  // Snapshots contain only the served roots, so repo-relative scripts it names must live under a root.
   deny_patterns: string[];        // Go RE2 patterns; must be non-empty when writable is true
 }
 
@@ -381,6 +382,8 @@ interface RenderRecord {
   revision: string;
   render_context: string;                       // RenderContextHash used for this snapshot
   bundles: string[];                            // repo-relative bundle directories found under all expanded roots, sorted
+  files: Record<string, string[]>;              // bundle → bundle-relative source files after ignore filtering and before prepare, sorted
+  prepare_retry: boolean;                       // a prepare rule failed; Refresh retries this revision with backoff
   diagnostics: CatalogDiagnostic[];             // extraction diagnostics (template, symlink, submodule, missing_skill_md, prepare_failed), sorted by bundle, file, line
 }
 ```
@@ -398,7 +401,7 @@ interface SkillBundle {
   bundle: string;                 // repo-relative bundle directory, e.g. "skills/agent/golang"
   base_dir: string;               // absolute snapshot directory served to agents
   body: string;                   // rendered SKILL.md without frontmatter
-  files: string[];                // bundle-relative paths, sorted, excluding SKILL.md, ignored files, and prepare output
+  files: string[];                // RenderRecord.files for the bundle, excluding SKILL.md
 }
 
 type DiagnosticCode =
@@ -602,11 +605,11 @@ Shutdown itself writes no change record. Every child also gets `SysProcAttr.Pdea
 
 ### Snapshot extraction
 
-1. Populate a new `os.MkdirTemp(rev, ".tmp-<revision>-")` directory. For `git` sources, list the tree with `git ls-tree -r -z <sha>` and write each blob from `git cat-file --batch`; entries with mode `120000` (symlink) or `160000` (submodule) are not written and are recorded. For `path` sources, walk the expanded roots with `Lstat` and copy regular files into `rev/.tmp-path-<random>/`; symbolic links are not followed or copied and are recorded. The path source revision is computed from the copied tree after step 3's ignore evaluation, and the remaining steps use it.
+1. Populate a new `os.MkdirTemp(rev, ".tmp-<revision>-")` directory. For `git` sources, list the tree with `git ls-tree -r -z <sha> -- <expanded roots and harness roots>` and write each blob from `git cat-file --batch`, so nothing outside the served roots (for example a repository-root `package.json` that declares bundles as workspace members) reaches the snapshot; entries with mode `120000` (symlink) or `160000` (submodule) are not written and are recorded. For `path` sources, walk the expanded roots with `Lstat` and copy regular files into `rev/.tmp-path-<random>/`; symbolic links are not followed or copied and are recorded. The path source revision is computed from the copied tree after step 3's ignore evaluation, and the remaining steps use it.
 2. Find bundles: every directory directly under an expanded root or harness root (harness roots expanded for all three `HarnessId` values) that contains `SKILL.md` or a recorded entry named `SKILL.md`, and every recorded symlink or submodule entry directly under such a root, which becomes a bundle with a `symlink` or `submodule` diagnostic. A recorded symlink inside a bundle produces a `symlink` diagnostic, and a recorded submodule a `submodule` diagnostic, for that bundle.
 3. When `ignore_file` is set, evaluate it per bundle (`internal/source/ignore.go`): each ignore file at or below the bundle directory applies gitignore patterns to paths below its own directory, and each of its lines starting with `./` also excludes that path prefix relative to its own directory. Ignore files above the bundle directory are not read. Every `node_modules` path and every ignore file is excluded. Paths listed in a `prepare` rule's `keep`, relative to a directory that contains its `when_file`, are exempt. Excluded files are deleted from the temporary directory. When the rules match the bundle's `SKILL.md`, it is kept and the bundle gets a `missing_skill_md` diagnostic.
 4. Render every remaining regular file inside each bundle, except binary files (NUL byte in the first 8,000 bytes), with the source's template context (see [Template](#template)). `file_dir`, `file_path`, and `{snapshot}` render to the final `rev/<revision>/` paths, never the temporary directory. A bundle with any extraction diagnostic keeps its raw files.
-5. Prepare: for each `prepare` rule, in configuration order, run `run` in every directory inside a bundle without diagnostics that contains `when_file`, with the daemon's environment, the rule's `timeout`, the shutdown context, and the process handling in [Git execution](#git-execution). Afterwards, walking the directory with `Lstat`: a symbolic link whose resolved target leaves that directory, or a non-zero exit or timeout, gives the bundle a `prepare_failed` diagnostic carrying the last line of stderr; every regular file with a link count above 1 is replaced by a private copy, so no inode is shared with a package cache.
+5. Prepare: before any rule runs, compute each rule's matching directories once from the filtered source tree: every directory inside a bundle without diagnostics that contains `when_file`. Directories created by `prepare` are never matched. Then, for each rule in configuration order, run `run` in each of its matching directories with the daemon's environment, a timeout of the smaller of the rule's `timeout` and the caller's remaining deadline, the shutdown context checked before each start, and the process handling in [Git execution](#git-execution). When the shutdown context or the caller's deadline ends a run, the extraction is aborted: the temporary directory is deleted, no `RenderRecord` is written, and the cancellation error is returned. Afterwards, walking the directory with `Lstat`: a symbolic link whose resolved target leaves that directory, or a non-zero exit or timeout, gives the bundle a `prepare_failed` diagnostic carrying the last line of stderr, and the `RenderRecord` is marked `prepare_retry`; every regular file with a link count above 1 is replaced by a private copy, so no inode is shared with a package cache.
 6. Set permissions per section 5, walking with `Lstat`; symbolic links are left unchanged.
 7. Write `rev/<revision>.render.json` atomically.
 8. Rename the temporary directory to `rev/<revision>/`. When the target exists, delete the temporary directory instead.
@@ -617,7 +620,7 @@ Shutdown itself writes no change record. Every child also gets `SysProcAttr.Pdea
 `Refresh(source)` is the only routine that moves a source's `current`. It runs on every `fetch_interval` tick, at startup, from the publish path, and after a successful push, always under the source's refresh mutex. It returns every error it meets, joined: the fetch or clone error after completing the remaining steps, and any extraction, index persistence, or view rebuild error, which stops the run at that step.
 
 1. Under the source mutex: when `repo.git` is absent, clone `--bare` into `repo.git.tmp-<random>` and rename it to `repo.git`; otherwise, when `git remote get-url origin` differs from the configured `url`, run `git remote set-url origin <url>`, then run `git fetch origin +refs/heads/<branch>:refs/heads/<branch>`. When `repo.git` exists afterwards, read `refs/heads/<branch>`, whether or not the fetch succeeded. Release the source mutex. Without `repo.git`, stop and return the error.
-2. When that commit differs from `SnapshotIndex.current`, or the snapshot of `current` is missing: extract its snapshot; then, under the index mutex, record the previous `current` in `superseded` with the current time when its snapshot directory exists, set `current`, and persist the index.
+2. When that commit differs from `SnapshotIndex.current`, the snapshot of `current` is missing, or `current`'s `RenderRecord` has `prepare_retry` and its retry backoff (starting at `fetch_interval`, doubling per failed retry up to one hour) has elapsed: extract its snapshot; a retry of an existing revision extracts into a temporary directory and replaces `rev/<revision>/` by renaming the old directory aside, renaming the new one into place, and deleting the old one; then, under the index mutex, record the previous `current` in `superseded` with the current time when its snapshot directory exists, set `current`, and persist the index.
 3. Unless view rebuilds are suppressed (startup), read every source's `current` under its index mutex, then take the view mutex. When the revision of this source that the current views were built from differs from the `current` just read, rebuild all harness views from those `current` values, diff each view against its previous view, apply the diff, and log diagnostics. Release the view mutex. A Refresh that returns has therefore made the source's `current` live.
 4. Diff semantics: a tool or prompt is **changed** when its served name, description, or invocation changed. Body-only and bundled-file edits change no definitions and send no `list_changed`, so client prompt caches stay valid. Diagnostics changes send no `list_changed`. The diff is applied with `AddTool`, `RemoveTools`, `AddPrompt`, and `RemovePrompts`; go-sdk sends `list_changed`.
 5. Each diagnostic is logged at `warn` once per (source, revision, bundle, file, line, code).
@@ -677,7 +680,7 @@ The tool handler acquires the change mutex and starts the pipeline in a goroutin
 2. When `commit` is null: reject the submit when `touched_bundles` is empty or `git diff --cached --quiet <base_revision>` reports no staged change; otherwise commit the staged content with the user's Git identity, the agent-supplied message, and a trailer `Skills-MCP-Change: <change_id>`, and record `commit` and `message`. When `commit` is set, the `message` argument is ignored and the result reports the recorded message.
 3. Require `git rev-parse HEAD` to equal `commit`, `git rev-parse HEAD^` to equal `base_revision`, and `git status --porcelain -z --ignored -uall` to be empty; otherwise fail with the mismatch or the unexpected paths.
 4. Verify the commit (`internal/authoring/verify.go`):
-   1. Materialize `commit` into `rev/.tmp-verify-<random>/` with snapshot extraction steps 1–6, rendered and prepared in that directory, so a `prepare` failure caused by the change fails verification before the push.
+   1. Materialize `commit` into `rev/.tmp-verify-<random>/` with snapshot extraction steps 1–6, rendered in that directory. `prepare` runs only in touched bundles, bounded by the pipeline's remaining deadline, so a `prepare` failure caused by the change fails verification before the push; untouched bundles skip `prepare` and take their `prepare_failed` diagnostics from the base revision's `RenderRecord`.
    2. Build the three harness views from it without the per-revision catalog cache. Fail on any diagnostic that is not also present, with the same code, bundle, and file, in the views of `base_revision`. Fail when a touched bundle that is served in a base view has a different served name or invocation in that view (bundles refused or shadowed in the base views are exempt, so authoring can repair them), or when a skill served from another source in the base views is no longer served.
    3. Changed paths are `git diff-tree -r -z -M --name-status --no-ext-diff --no-textconv <base_revision> <commit>`. Fail on any `D` status, on any `R` status whose old path is outside `touched_bundles`, and when any changed path is outside `touched_bundles` or is a protected path: an argv element of the source's `validate` that names an existing file in `base_revision`, any path in that file's directory, or any `ignore_file` in that directory or its ancestors up to the bundle directory.
    4. Scan the added lines of `git diff-tree -r -p -a -U0 -M --no-ext-diff --no-textconv --no-color <base_revision> <commit>`, the added and renamed paths, and the commit message from `git log -1 --format=%B <commit>` against `deny_patterns`.
@@ -699,7 +702,7 @@ The tool handler acquires the change mutex and starts the pipeline in a goroutin
 - `name` is 1–64 characters, matches `^[a-z0-9]+(-[a-z0-9]+)*$`, and equals the bundle directory name. With `author_prefix_except` set, a present `author` is a string whose lowercase form matches the same pattern (`invalid_author`), and the served name satisfies the length and pattern rule (`invalid_name`).
 - The served name with `-` replaced by `_` is none of the authoring tool names (`reserved_name`).
 - `description` is a non-empty string of at most 1,024 characters.
-- The bundle contains no symbolic link or submodule, and ignore rules do not match its `SKILL.md`.
+- The bundle's extraction produced no `symlink`, `submodule`, or `missing_skill_md` diagnostic. View builds read these from the `RenderRecord` and never walk the snapshot for links, so `prepare` output links are not re-judged.
 
 ### Authoring-only (on every mutation)
 
@@ -997,7 +1000,7 @@ systemd: `systemctl --user import-environment SSH_AUTH_SOCK` before starting the
 
 - **config:** defaults, each configuration error including `submit_timeout` under 60 seconds, `~/` and `{snapshot}` expansion, `template.vars` merging over the default, authoring tools absent when `default_write_source` is null.
 - **catalog:** frontmatter edge cases, invalid names, description length, name and directory mismatch, author prefixing with and without `author_prefix_except`, a missing author (unprefixed), a mixed-case author (`JuliusBrussee` → `juliusbrussee-caveman`), a name already carrying the prefix, an invalid author, prefixed-name length overflow, reserved names such as `skill-create`, precedence across sources, harness same-name replacement, duplicate served names excluding both bundles, deterministic ordering, per-revision catalog cache.
-- **prepare:** a rule running in a nested matching directory, `keep` exempting a lockfile from `ignore_file`, prepare output excluded from rendering and from `files`, non-zero exit and timeout producing `prepare_failed`, a link leaving its directory refused, hardlinked files replaced by private copies, symlinks inside the directory kept, `RenderContextHash` changing with the rules, a change that breaks `prepare` failing verification, the configured bun rule installing `disk-cleanup` dependencies so its own `bun install --frozen-lockfile` exits 0 on the read-only snapshot.
+- **prepare:** a repository-root `package.json` declaring the bundle as a workspace member not reaching the snapshot, matching directories computed before rules run and never inside `node_modules`, executable bits of installed binaries kept, a `prepare_failed` snapshot retried with backoff and replaced after the environment is fixed, shutdown or deadline during `prepare` aborting the extraction without a `RenderRecord`, verification running `prepare` only in touched bundles, a rule running in a nested matching directory, `keep` exempting a lockfile from `ignore_file`, prepare output excluded from rendering and from `files`, non-zero exit and timeout producing `prepare_failed`, a link leaving its directory refused, hardlinked files replaced by private copies, symlinks inside the directory kept, `RenderContextHash` changing with the rules, a change that breaks `prepare` failing verification, the configured bun rule installing `disk-cleanup` dependencies so its own `bun install --frozen-lockfile` exits 0 on the read-only snapshot.
 - **template:** each accepted tag form with varied spacing, `file_dir` and `file_path` per file pointing at the final snapshot path (no `.tmp-` in output), `{snapshot}` and `~/` in variables, `env` with and without fallback, unset and non-allowlisted env names, `<%=`, `<%_`, `<%#`, `include(...)`, and literal `<%` refused, single-pass rendering, binary files untouched, line numbers in diagnostics.
 - **source:** clone, refspec fetch moving `refs/heads/<branch>`, fetch failure with and without a snapshot, offline startup after a `RenderContextHash` change re-extracting from `repo.git`, interrupted extraction cleanup, orphaned `RenderRecord` cleanup, concurrent extraction of one revision, snapshot permissions and removal of read-only trees, `.gitattributes` `export-ignore` and `export-subst` having no effect, symlink and submodule entries producing diagnostics and never being followed, `ignore_file` evaluation against copies of the real ai-registry `.registry-ignore` files (bundle-level patterns, nested ignore files, `./` prefix lines, ancestor ignore files not applied, `SKILL.md` never removed), `node_modules` exclusion, adding a root changing `RenderContextHash`, unindexed snapshot directories deleted at startup, clone into a temporary directory and leftover cleanup, startup offline with no `repo.git` and a later Refresh cloning, rendered files on disk, refused bundles left raw, `SnapshotIndex` persistence across restart, retention on a tick with no new commit, retention skipping `current` and open-change bases, on-demand snapshots entering retention, path source content-hash revision, recursive watch of a newly created directory.
 - **render:** `skill_change_read` and `skill_change_diff` chunking with `sha` mismatch errors; budget boundaries including wrapper bytes, newline cut, single line longer than the budget, multi-byte UTF-8 at the cut, continuation offsets that reassemble the original content exactly, `offset` without `revision` and the reverse, out-of-range and mid-rune `offset`, retired revision error, overhead larger than the budget, `<bundled_files>` and diagnostics only on the first chunk, the diagnostics 2,048-byte cap with the `and <n> more` line.
@@ -1453,3 +1456,15 @@ Outcome: Q11A2 restated as a generic, configuration-driven `prepare` step (like 
 | Q11 | Q11A2 with per-source `prepare` rules. | Specified in sections 1, 3, 6, 7, 8 |
 | Package cache inodes | bun's default Linux backend hardlinks installed files from its global cache (37 links measured); the example rule uses `--backend=copyfile`, and the daemon replaces any multiply-linked file with a private copy before setting permissions. | Specified in sections 6, 8 |
 | Install links | `node_modules/.bin` symlinks are allowed only when they resolve inside the rule's directory. | Specified in sections 3, 8 |
+
+### A.16 Review round 12: `prepare` findings applied
+
+| Topic | Revision | Status |
+|---|---|---|
+| Workspace roots | Git snapshots materialize only the served roots; ai-registry's root `package.json` lists `skills/user/disk-cleanup` and `skills/agent/github-fix-issues/scripts` as workspace members, and bun otherwise installs the whole workspace at the snapshot root. | Specified in section 8 |
+| Source file list | `RenderRecord.files` records each bundle's source files before `prepare`; `files` and the link rule use it. | Specified in sections 6, 9 |
+| Installed modes | `prepare` output keeps the owner-execute bit as `0555`. | Specified in section 5 |
+| Transient failures | `prepare_retry` makes Refresh re-extract with backoff; the env file names the `prepare` interpreter. | Specified in sections 5, 6, 8 |
+| Cancellation | Shutdown or deadline during `prepare` aborts the extraction. | Specified in section 8 |
+| Matching | Matching directories are computed once before rules run and never inside `prepare` output. | Specified in sections 6, 8 |
+| Verification | `prepare` runs only in touched bundles, bounded by the pipeline deadline. | Specified in section 8 |
