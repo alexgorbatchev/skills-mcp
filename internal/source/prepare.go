@@ -51,13 +51,20 @@ func (e *extraction) prepare(ctx context.Context, dir string, rec *catalog.Rende
 			if failed[run.bundle] {
 				continue
 			}
+			if err := e.shutdown.Err(); err != nil {
+				return fmt.Errorf("prepare interrupted: %w", errShutdown)
+			}
 			abs := filepath.Join(dir, filepath.FromSlash(run.dir))
 			_, err := proc.Run(ctx, proc.Command{Name: rule.Run[0], Args: rule.Run[1:], Dir: abs, Timeout: rule.Timeout})
 			if errors.Is(err, proc.ErrCanceled) {
 				return fmt.Errorf("prepare interrupted: %w", err)
 			}
-			if err == nil {
-				err = checkPrepareOutput(abs)
+			// Whatever the outcome, no installed file may share an inode
+			// with a package cache before permissions are set.
+			if checkErr := checkPrepareOutput(abs); err == nil {
+				err = checkErr
+			} else if checkErr != nil && !errors.Is(checkErr, errLinkEscapes) {
+				err = errors.Join(err, checkErr)
 			}
 			if err != nil {
 				failed[run.bundle] = true
@@ -95,27 +102,35 @@ func prepareMessage(err error) string {
 	return err.Error()
 }
 
-// checkPrepareOutput refuses links that resolve outside dir and replaces
-// multiply-linked files with private copies, so the snapshot shares no inode
-// with a package cache.
+var (
+	errLinkEscapes = errors.New("resolves outside its directory")
+	errShutdown    = errors.New("interrupted by shutdown")
+)
+
+// checkPrepareOutput walks the whole directory: it replaces every
+// multiply-linked file with a private copy and reports the first symbolic
+// link that does not resolve inside dir.
 func checkPrepareOutput(dir string) error {
-	return filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return err
+	}
+	var linkErr error
+	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		switch {
 		case d.Type()&fs.ModeSymlink != 0:
-			target, err := os.Readlink(p)
+			if linkErr != nil {
+				return nil
+			}
+			rel, _ := filepath.Rel(dir, p) // p is below dir
+			resolved, err := filepath.EvalSymlinks(p)
 			if err != nil {
-				return err
-			}
-			resolved := target
-			if !filepath.IsAbs(target) {
-				resolved = filepath.Join(filepath.Dir(p), target)
-			}
-			if resolved != dir && !strings.HasPrefix(resolved, dir+string(filepath.Separator)) {
-				rel, _ := filepath.Rel(dir, p) // p is below dir
-				return fmt.Errorf("link %s resolves outside its directory", filepath.ToSlash(rel))
+				linkErr = fmt.Errorf("link %s does not resolve: %w", filepath.ToSlash(rel), errLinkEscapes)
+			} else if resolved != root && !strings.HasPrefix(resolved, root+string(filepath.Separator)) {
+				linkErr = fmt.Errorf("link %s %w", filepath.ToSlash(rel), errLinkEscapes)
 			}
 		case d.Type().IsRegular():
 			info, err := d.Info()
@@ -128,6 +143,10 @@ func checkPrepareOutput(dir string) error {
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	return linkErr
 }
 
 // unshare replaces a hard-linked file with a private copy of the same mode.

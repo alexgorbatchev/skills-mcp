@@ -262,23 +262,39 @@ func (s *Service) checkDeny(ctx context.Context, rec *Record, src *config.Source
 			paths = append(paths, e.paths[len(e.paths)-1])
 		}
 	}
-	if hits := denyScan(src.DenyPatterns, addedLines(patch), paths, string(msg)); len(hits) > 0 {
+	added, err := addedLines(patch)
+	if err != nil {
+		return err
+	}
+	if hits := denyScan(src.DenyPatterns, added, paths, string(msg)); len(hits) > 0 {
 		return fmt.Errorf("verification failed: content matches deny patterns:\n%s", strings.Join(hits, "\n"))
 	}
 	return nil
 }
 
-func addedLines(patch []byte) []string {
+// addedLines returns the added lines of a patch. Only the "---"/"+++" pair
+// before a file's first hunk is a header; inside a hunk every "+" line is
+// content, even one that starts with "++ ".
+func addedLines(patch []byte) ([]string, error) {
 	var lines []string
+	inHunk := false
 	sc := bufio.NewScanner(bytes.NewReader(patch))
 	sc.Buffer(make([]byte, 64*1024), maxFileBytes+1024)
 	for sc.Scan() {
 		line := sc.Text()
-		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++ ") {
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			inHunk = false
+		case strings.HasPrefix(line, "@@"):
+			inHunk = true
+		case inHunk && strings.HasPrefix(line, "+"):
 			lines = append(lines, line[1:])
 		}
 	}
-	return lines
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("reading the commit diff: %w", err)
+	}
+	return lines, nil
 }
 
 // runValidate runs the source's validate command once per touched bundle

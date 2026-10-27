@@ -25,6 +25,14 @@ func TestSubmitVerificationFailures(t *testing.T) {
 			want: "an added line matches",
 		},
 		{
+			name: "deny pattern on a line starting with ++",
+			mutate: func(e *env, id string) error {
+				_, err := e.svc.WriteFile(context.Background(), WriteArgs{ChangeID: id, Bundle: "skills/agent/golang", Path: "notes.md", Content: "++ see host.secret.example\n"})
+				return err
+			},
+			want: "an added line matches",
+		},
+		{
 			name: "deny pattern in a path",
 			mutate: func(e *env, id string) error {
 				_, err := e.svc.WriteFile(context.Background(), WriteArgs{ChangeID: id, Bundle: "skills/agent/golang", Path: "secret.example.md", Content: "x"})
@@ -178,8 +186,12 @@ func TestDenyScanAndParsing(t *testing.T) {
 	if err != nil || len(entries) != 2 || entries[1].status != "R" || entries[1].paths[1] != "c" {
 		t.Fatalf("entries = %+v, %v", entries, err)
 	}
-	lines := addedLines([]byte("+++ b/file\n+added\n-removed\n context\n"))
-	if len(lines) != 1 || lines[0] != "added" {
-		t.Fatalf("addedLines = %q", lines)
+	patch := "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1,2 @@\n+added\n+++ looks like a header\n-removed\n context\n"
+	lines, err := addedLines([]byte(patch))
+	if err != nil || len(lines) != 2 || lines[0] != "added" || lines[1] != "++ looks like a header" {
+		t.Fatalf("addedLines = %q, %v", lines, err)
+	}
+	if _, err := addedLines([]byte(strings.Repeat("x", maxFileBytes+2048))); err == nil {
+		t.Fatal("an oversized line was not reported")
 	}
 }

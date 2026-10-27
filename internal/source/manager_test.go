@@ -616,3 +616,25 @@ func TestLoadIndexesReadOnly(t *testing.T) {
 		t.Fatal("unreadable index loaded")
 	}
 }
+
+func TestStaleRebuildNeverRegressesViews(t *testing.T) {
+	u := newUpstream(t)
+	u.write("skills/agent/a/SKILL.md", skillDoc("a", "v1"))
+	u.commit("one")
+	h := newHarness(t, gitSourceConfig(u.url()))
+	h.init()
+	h.refresh("reg")
+	staleSnaps, staleGens, err := h.m.currentSnapshots()
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.write("skills/agent/a/SKILL.md", skillDoc("a", "v2"))
+	u.commit("two")
+	h.refresh("reg")
+	if err := h.m.rebuildFrom(staleSnaps, staleGens); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.m.Views()[config.ClaudeCode].Skill("a").Body; got != "v2" {
+		t.Fatalf("stale rebuild regressed the view to %q", got)
+	}
+}

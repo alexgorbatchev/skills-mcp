@@ -137,3 +137,58 @@ func TestOwnerOf(t *testing.T) {
 		t.Fatal("ownerOf wrong")
 	}
 }
+
+func TestUnchangedPathSourceSkipsPrepare(t *testing.T) {
+	real := t.TempDir()
+	writeFile(t, filepath.Join(real, "agent/a/SKILL.md"), skillDoc("a", ""), 0o644)
+	writeFile(t, filepath.Join(real, "agent/a/package.json"), "{}", 0o644)
+	counter := filepath.Join(t.TempDir(), "runs")
+	src := pathSource(real)
+	src.Prepare = []config.PrepareRule{{WhenFile: "package.json", Run: []string{"sh", "-c", "echo run >> " + counter}, Timeout: 10 * time.Second}}
+	h := newHarness(t, src)
+	h.init()
+	for range 3 {
+		h.refresh("local")
+	}
+	data, err := os.ReadFile(counter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runs := strings.Count(string(data), "run"); runs != 1 {
+		t.Fatalf("prepare ran %d times for an unchanged source", runs)
+	}
+}
+
+func TestPathSourcePrepareRetry(t *testing.T) {
+	real := t.TempDir()
+	writeFile(t, filepath.Join(real, "agent/a/SKILL.md"), skillDoc("a", ""), 0o644)
+	writeFile(t, filepath.Join(real, "agent/a/package.json"), "{}", 0o644)
+	marker := filepath.Join(t.TempDir(), "fail")
+	writeFile(t, marker, "", 0o644)
+	src := pathSource(real)
+	src.Prepare = []config.PrepareRule{{WhenFile: "package.json", Run: []string{"sh", "-c", "test ! -e " + marker}, Timeout: 10 * time.Second}}
+	h := newHarness(t, src)
+	h.init()
+	h.refresh("local")
+	if h.lastView(config.ClaudeCode).Skill("a") != nil {
+		t.Fatal("failed bundle served")
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	h.clock.advance(time.Minute)
+	h.refresh("local")
+	if h.lastView(config.ClaudeCode).Skill("a") == nil {
+		t.Fatal("retried bundle not served")
+	}
+
+	// A failing render or prepare step fails the refresh.
+	src.Prepare = []config.PrepareRule{{WhenFile: "package.json", Run: []string{"true"}, Timeout: 10 * time.Second}}
+	writeFile(t, filepath.Join(real, "agent/a/SKILL.md"), skillDoc("a", "changed"), 0o644)
+	stopped, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.m.opts.Shutdown = stopped
+	if err := h.m.Refresh(context.Background(), "local", RefreshOptions{}); err == nil || !strings.Contains(err.Error(), "interrupted") {
+		t.Fatalf("Refresh during shutdown = %v", err)
+	}
+}

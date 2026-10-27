@@ -44,6 +44,9 @@ type Options struct {
 	OnViews func(map[config.HarnessID]*catalog.View)
 	// Now is the clock; nil uses time.Now.
 	Now func() time.Time
+	// Shutdown, when cancelled, stops extractions from starting new prepare
+	// commands; nil never stops them.
+	Shutdown context.Context
 }
 
 // Manager owns every source's snapshots and current revision.
@@ -54,10 +57,11 @@ type Manager struct {
 	cache   catalog.Cache
 	flight  singleflight.Group
 
-	viewMu sync.Mutex
-	views  map[config.HarnessID]*catalog.View
-	stale  bool // a retained revision was re-extracted; rebuild even if revisions match
-	logged map[string]bool
+	viewMu   sync.Mutex
+	views    map[config.HarnessID]*catalog.View
+	stale    bool              // a retained revision was re-extracted; rebuild even if revisions match
+	builtGen map[string]uint64 // source generations the views were built from
+	logged   map[string]bool
 }
 
 type sourceState struct {
@@ -75,6 +79,7 @@ type sourceState struct {
 
 	retryDelay time.Duration
 	nextRetry  time.Time
+	generation uint64 // incremented whenever current changes; guarded by indexMu
 }
 
 // NewManager creates a manager; call Init before use.
@@ -87,6 +92,9 @@ func NewManager(opts Options) *Manager {
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)
+	}
+	if opts.Shutdown == nil {
+		opts.Shutdown = context.Background()
 	}
 	if opts.BaseRevisions == nil {
 		opts.BaseRevisions = func() map[string]map[string]bool { return nil }
@@ -365,17 +373,22 @@ func (m *Manager) refreshGit(ctx context.Context, st *sourceState) error {
 
 func (m *Manager) refreshPath(ctx context.Context, st *sourceState) error {
 	e := m.pathExtraction(st)
-	t, err := e.build(ctx)
+	staged, err := e.stage(ctx)
 	if err != nil {
 		return err
 	}
-	rev := t.record.Revision
+	rev := staged.record.Revision
 	need := m.extractionNeed(st, rev)
 	if need == needNone {
-		if err := removeTree(t.dir); err != nil {
+		// Unchanged: skip rendering and prepare entirely.
+		if err := removeTree(staged.dir); err != nil {
 			return err
 		}
 		return m.setCurrent(st, rev)
+	}
+	t, err := e.finish(ctx, staged)
+	if err != nil {
+		return err
 	}
 	if err := t.finalize(st.revDir, need == needReplace); err != nil {
 		return err
@@ -441,6 +454,9 @@ func (m *Manager) setCurrent(st *sourceState, rev string) error {
 		st.index.Superseded[prev] = m.opts.Now().UTC().Format(time.RFC3339)
 	}
 	delete(st.index.Superseded, rev)
+	if st.index.Current != rev {
+		st.generation++
+	}
 	st.index.Current = rev
 	return writeJSONAtomic(st.indexPath(), st.index)
 }
@@ -455,6 +471,7 @@ func (m *Manager) gitExtraction(st *sourceState, sha string) *extraction {
 		src: st.src, revDir: st.revDir, revision: sha, tmpName: ".tmp-" + sha + "-",
 		populate: m.lockedPopulate(st, st.repo.populate(sha, st.src.AllRootPaths())),
 		vars:     st.src.Template.Vars, env: st.src.Template.Env, getenv: m.opts.Getenv, hash: st.hash,
+		shutdown: m.opts.Shutdown,
 	}
 }
 
@@ -472,6 +489,7 @@ func (m *Manager) pathExtraction(st *sourceState) *extraction {
 		src: st.src, revDir: st.revDir, tmpName: ".tmp-path-",
 		populate: populatePath(st.pathRoot, st.src.AllRootPaths()),
 		vars:     st.src.Template.Vars, env: st.src.Template.Env, getenv: m.opts.Getenv, hash: st.hash,
+		shutdown: m.opts.Shutdown,
 	}
 }
 
@@ -608,35 +626,59 @@ func (m *Manager) Retained(name, rev string) bool {
 
 // CurrentSnapshots returns the current snapshot of every source that has one.
 func (m *Manager) CurrentSnapshots() ([]catalog.Snapshot, error) {
+	snaps, _, err := m.currentSnapshots()
+	return snaps, err
+}
+
+// currentSnapshots also returns each source's generation, read with its
+// current revision.
+func (m *Manager) currentSnapshots() ([]catalog.Snapshot, map[string]uint64, error) {
 	var snaps []catalog.Snapshot
+	gens := map[string]uint64{}
 	for _, st := range m.sources {
-		cur := m.Current(st.src.Name)
+		st.indexMu.Lock()
+		cur, gen := st.index.Current, st.generation
+		st.indexMu.Unlock()
+		gens[st.src.Name] = gen
 		if cur == "" {
 			continue
 		}
 		snap, err := m.Snapshot(st.src.Name, cur)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		snaps = append(snaps, snap)
 	}
-	return snaps, nil
+	return snaps, gens, nil
 }
 
 // RebuildViews rebuilds every harness view from the current snapshots when
 // any source's current revision differs from what the views were built
 // from, and hands them to OnViews.
 func (m *Manager) RebuildViews() error {
-	snaps, err := m.CurrentSnapshots()
+	snaps, gens, err := m.currentSnapshots()
 	if err != nil {
 		return err
 	}
+	return m.rebuildFrom(snaps, gens)
+}
+
+// rebuildFrom builds views from snapshots read at the given generations.
+// A caller holding snapshots older than the built views skips the rebuild,
+// so concurrent refreshes never move views backwards.
+func (m *Manager) rebuildFrom(snaps []catalog.Snapshot, gens map[string]uint64) error {
 	m.viewMu.Lock()
 	defer m.viewMu.Unlock()
+	for name, gen := range gens {
+		if gen < m.builtGen[name] {
+			return nil
+		}
+	}
 	if m.views != nil && !m.stale && upToDate(m.views[config.ClaudeCode], snaps) {
 		return nil
 	}
 	m.stale = false
+	m.builtGen = gens
 	views, err := m.cache.Views(snaps)
 	if err != nil {
 		return err

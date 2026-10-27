@@ -1,3 +1,5 @@
+// Package source materializes skill sources into immutable, rendered
+// snapshots and keeps each source's current revision fresh.
 package source
 
 import (
@@ -52,6 +54,8 @@ type extraction struct {
 	env      []string
 	getenv   func(string) (string, bool)
 	hash     string // RenderContextHash
+	// shutdown stops prepare from starting new commands once cancelled.
+	shutdown context.Context
 	// prepareOnly limits prepare to these bundles; nil runs every bundle.
 	prepareOnly map[string]bool
 	// baseRecord supplies prepare diagnostics for bundles that skip prepare.
@@ -63,7 +67,17 @@ type extraction struct {
 
 // build runs extraction steps 1–6 in a new temporary directory. On error
 // the temporary directory is removed.
-func (e *extraction) build(ctx context.Context) (t *tree, err error) {
+func (e *extraction) build(ctx context.Context) (*tree, error) {
+	t, err := e.stage(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return e.finish(ctx, t)
+}
+
+// stage runs extraction steps 1–3 (populate, find bundles, filter) and
+// computes the path source revision. On error the directory is removed.
+func (e *extraction) stage(ctx context.Context) (t *tree, err error) {
 	dir, err := os.MkdirTemp(e.revDir, e.tmpName)
 	if err != nil {
 		return nil, fmt.Errorf("creating extraction directory: %w", err)
@@ -102,24 +116,36 @@ func (e *extraction) build(ctx context.Context) (t *tree, err error) {
 			return nil, err
 		}
 	}
+	return &tree{dir: dir, record: rec}, nil
+}
+
+// finish runs extraction steps 4–6 (render, prepare, permissions) on a
+// staged tree. On error the directory is removed.
+func (e *extraction) finish(ctx context.Context, t *tree) (_ *tree, err error) {
+	defer func() {
+		if err != nil {
+			_ = removeTree(t.dir) // best-effort cleanup of a failed extraction
+		}
+	}()
+	rec := t.record
 	final := filepath.Join(e.revDir, rec.Revision)
 	if e.renderInPlace {
-		final = dir
+		final = t.dir
 	}
-	if err := e.render(dir, final, rec); err != nil {
+	if err := e.render(t.dir, final, rec); err != nil {
 		return nil, err
 	}
-	if err := e.prepare(ctx, dir, rec); err != nil {
+	if err := e.prepare(ctx, t.dir, rec); err != nil {
 		return nil, err
 	}
 	for i := range rec.Diagnostics {
 		rec.Diagnostics[i].Revision = rec.Revision
 	}
 	catalog.SortDiagnostics(rec.Diagnostics)
-	if err := setPermissions(dir); err != nil {
+	if err := setPermissions(t.dir); err != nil {
 		return nil, err
 	}
-	return &tree{dir: dir, record: rec}, nil
+	return t, nil
 }
 
 type foundBundle struct {
@@ -217,11 +243,11 @@ func filterBundle(dir, bundle string, src *config.Source) ([]string, []catalog.D
 			}
 		}
 	}
-	rules := newIgnoreRules(src.IgnoreFile, ignoreFiles, keep)
+	rules := catalog.NewIgnoreRules(src.IgnoreFile, ignoreFiles, keep)
 	var kept []string
 	var diags []catalog.Diagnostic
 	for _, f := range files {
-		if !rules.excluded(f) {
+		if !rules.Excluded(f) {
 			kept = append(kept, f)
 			continue
 		}

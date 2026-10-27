@@ -1,6 +1,4 @@
-// Package source materializes skill sources into immutable, rendered
-// snapshots and keeps each source's current revision fresh.
-package source
+package catalog
 
 import (
 	"bufio"
@@ -14,23 +12,23 @@ import (
 
 const nodeModules = "node_modules"
 
-// ignoreRules evaluates one bundle's ignore files with the registry's
+// IgnoreRules evaluates one bundle's ignore files with the registry's
 // semantics: each ignore file at or below the bundle directory applies
 // gitignore patterns to paths below its own directory, and its lines starting
 // with "./" also exclude that path prefix relative to its directory. Ignore
 // files above the bundle are not read.
-type ignoreRules struct {
+type IgnoreRules struct {
 	fileName string
 	matcher  gitignore.Matcher
 	prefixes []string
 	keep     map[string]bool
 }
 
-// newIgnoreRules builds the rules from the ignore files found in a bundle.
+// NewIgnoreRules builds the rules from the ignore files found in a bundle.
 // files maps bundle-relative ignore file paths to their content; keep lists
 // bundle-relative paths exempt from filtering.
-func newIgnoreRules(fileName string, files map[string][]byte, keep []string) *ignoreRules {
-	r := &ignoreRules{fileName: fileName, keep: map[string]bool{}}
+func NewIgnoreRules(fileName string, files map[string][]byte, keep []string) *IgnoreRules {
+	r := &IgnoreRules{fileName: fileName, keep: map[string]bool{}}
 	for _, k := range keep {
 		r.keep[k] = true
 	}
@@ -68,8 +66,8 @@ func newIgnoreRules(fileName string, files map[string][]byte, keep []string) *ig
 	return r
 }
 
-// excluded reports whether a bundle-relative regular file is filtered out.
-func (r *ignoreRules) excluded(rel string) bool {
+// Excluded reports whether a bundle-relative regular file is filtered out.
+func (r *IgnoreRules) Excluded(rel string) bool {
 	if r.keep[rel] {
 		return false
 	}

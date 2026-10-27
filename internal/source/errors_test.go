@@ -273,3 +273,67 @@ func TestPruneEmptyDirs(t *testing.T) {
 		t.Fatal("removing from a read-only directory succeeded")
 	}
 }
+
+func TestFailedPrepareNeverSharesCacheInodes(t *testing.T) {
+	cache := filepath.Join(t.TempDir(), "pkg-cache")
+	writeFile(t, filepath.Join(cache, "f"), "cached", 0o644)
+	u := newUpstream(t)
+	u.write("skills/agent/dep/SKILL.md", skillDoc("dep", ""))
+	u.write("skills/agent/dep/package.json", "{}")
+	sha := u.commit("one")
+	src := gitSourceConfig(u.url())
+	src.Prepare = []config.PrepareRule{{WhenFile: "package.json", Run: []string{"sh", "-c", "ln " + filepath.Join(cache, "f") + " hl; exit 1"}, Timeout: 10 * time.Second}}
+	h := newHarness(t, src)
+	h.init()
+	h.refresh("reg")
+	info, err := os.Stat(filepath.Join(cache, "f"))
+	if err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("package cache file mode = %v, %v", info.Mode(), err)
+	}
+	rec, _ := h.m.Record("reg", sha)
+	if len(rec.Diagnostics) != 1 || rec.Diagnostics[0].Code != catalog.CodePrepareFailed {
+		t.Fatalf("diagnostics = %+v", rec.Diagnostics)
+	}
+}
+
+func TestPrepareRefusesChainedEscapingLinks(t *testing.T) {
+	u := newUpstream(t)
+	u.write("skills/agent/dep/SKILL.md", skillDoc("dep", ""))
+	u.write("skills/agent/dep/package.json", "{}")
+	sha := u.commit("one")
+	src := gitSourceConfig(u.url())
+	src.Prepare = []config.PrepareRule{{WhenFile: "package.json", Run: []string{"sh", "-c", "mkdir -p p/q && ln -s .. p/q/b && ln -s p/q/b/../../.. a"}, Timeout: 10 * time.Second}}
+	h := newHarness(t, src)
+	h.init()
+	h.refresh("reg")
+	rec, _ := h.m.Record("reg", sha)
+	if len(rec.Diagnostics) != 1 || !strings.Contains(rec.Diagnostics[0].Message, "resolves outside its directory") {
+		t.Fatalf("diagnostics = %+v", rec.Diagnostics)
+	}
+	src.Prepare[0].Run = []string{"sh", "-c", "ln -s missing dangling"}
+	h = newHarness(t, src)
+	h.init()
+	h.refresh("reg")
+	rec, _ = h.m.Record("reg", sha)
+	if len(rec.Diagnostics) != 1 || !strings.Contains(rec.Diagnostics[0].Message, "does not resolve") {
+		t.Fatalf("dangling diagnostics = %+v", rec.Diagnostics)
+	}
+}
+
+func TestShutdownStopsPrepare(t *testing.T) {
+	u := newUpstream(t)
+	u.write("skills/agent/dep/SKILL.md", skillDoc("dep", ""))
+	u.write("skills/agent/dep/package.json", "{}")
+	sha := u.commit("one")
+	src := gitSourceConfig(u.url())
+	src.Prepare = []config.PrepareRule{{WhenFile: "package.json", Run: []string{"touch", "ran"}, Timeout: 10 * time.Second}}
+	h := newHarness(t, src)
+	stopped, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.m.opts.Shutdown = stopped
+	h.init()
+	err := h.m.Refresh(context.Background(), "reg", RefreshOptions{})
+	if err == nil || !strings.Contains(err.Error(), "interrupted by shutdown") || h.m.Retained("reg", sha) {
+		t.Fatalf("Refresh = %v, retained = %v", err, h.m.Retained("reg", sha))
+	}
+}

@@ -1,4 +1,4 @@
-package source
+package catalog
 
 import "testing"
 
@@ -9,7 +9,7 @@ func TestIgnoreRules(t *testing.T) {
 		"nested/.registry-ignore": []byte("*.tmp\n!keep.tmp\n./sub/\n"),
 		"other/.registry-ignore":  []byte("./\n"),
 	}
-	r := newIgnoreRules(".registry-ignore", files, []string{"scripts/bun.lock"})
+	r := NewIgnoreRules(".registry-ignore", files, []string{"scripts/bun.lock"})
 	tests := []struct {
 		path string
 		want bool
@@ -35,18 +35,18 @@ func TestIgnoreRules(t *testing.T) {
 		{"other/file", true}, // "./" in a nested ignore file excludes its directory
 	}
 	for _, tt := range tests {
-		if got := r.excluded(tt.path); got != tt.want {
-			t.Errorf("excluded(%q) = %v, want %v", tt.path, got, tt.want)
+		if got := r.Excluded(tt.path); got != tt.want {
+			t.Errorf("Excluded(%q) = %v, want %v", tt.path, got, tt.want)
 		}
 	}
 }
 
 func TestIgnoreRulesWithoutFileName(t *testing.T) {
-	r := newIgnoreRules("", nil, nil)
-	if r.excluded("a/b") {
+	r := NewIgnoreRules("", nil, nil)
+	if r.Excluded("a/b") {
 		t.Fatal("excluded without rules")
 	}
-	if !r.excluded("a/node_modules/b") {
+	if !r.Excluded("a/node_modules/b") {
 		t.Fatal("node_modules not excluded")
 	}
 }

@@ -75,7 +75,7 @@ func Run(ctx context.Context, opts Options) error {
 	var svc *authoring.Service
 	var servers *mcpserver.Servers
 	src := source.NewManager(source.Options{
-		Config: cfg, Dirs: opts.Dirs, Git: g, Logger: log,
+		Config: cfg, Dirs: opts.Dirs, Git: g, Logger: log, Shutdown: shutdown,
 		BaseRevisions: func() map[string]map[string]bool {
 			if svc == nil {
 				return nil

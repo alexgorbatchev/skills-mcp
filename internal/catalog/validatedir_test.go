@@ -68,6 +68,27 @@ func TestValidateDir(t *testing.T) {
 		}
 	}
 
+	ignoring := &config.Source{IgnoreFile: ".registry-ignore", Template: config.Template{Vars: map[string]string{}},
+		Prepare: []config.PrepareRule{{WhenFile: "package.json", Keep: []string{"bun.lock"}}}}
+	ign := filepath.Join(root, "ign")
+	writeTree(t, ign, map[string]string{
+		"SKILL.md":                     "---\nname: ign\ndescription: d\n---\nbody\n",
+		".registry-ignore":             "scripts/__tests__/\nbun.lock\n",
+		"scripts/__tests__/fixture.md": "<%= fixture %>",
+		"package.json":                 "{}",
+		"bun.lock":                     "<%= kept and checked %>",
+	})
+	problems, err = ValidateDir(ign, ignoring, getenv)
+	if err != nil || len(problems) != 1 || !strings.Contains(problems[0], "unsupported_template_tag: bun.lock:1") {
+		t.Fatalf("ignored files = %v, %v", problems, err)
+	}
+	hidden := filepath.Join(root, "hidden")
+	writeTree(t, hidden, map[string]string{"SKILL.md": "---\nname: hidden\ndescription: d\n---\n", ".registry-ignore": "SKILL.md\n"})
+	problems, _ = ValidateDir(hidden, ignoring, getenv)
+	if len(problems) != 1 || !strings.Contains(problems[0], "missing_skill_md") {
+		t.Fatalf("hidden SKILL.md = %v", problems)
+	}
+
 	empty := filepath.Join(root, "empty")
 	if err := os.MkdirAll(empty, 0o755); err != nil {
 		t.Fatal(err)
