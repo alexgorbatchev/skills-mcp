@@ -49,6 +49,7 @@ func (s *Service) reconcile(ctx context.Context, c *change, mode reconcileMode) 
 		if err := s.store.persist(rec); err != nil {
 			return err
 		}
+		s.repaired(rec, "applied an interrupted rebase", "base_revision", rec.BaseRevision)
 	}
 	if published, err := s.detectPublished(ctx, c, mode); err != nil || published {
 		return err
@@ -58,10 +59,12 @@ func (s *Service) reconcile(ctx context.Context, c *change, mode reconcileMode) 
 		if err := s.resetToBase(ctx, rec); err != nil {
 			return err
 		}
+		s.repaired(rec, "reset a commit that no longer matched the record", "head", head)
 	case rec.Commit == nil && head != rec.BaseRevision:
 		if _, err := s.git(ctx, rec, gitx.Opts{}, "reset", "--quiet", "--soft", rec.BaseRevision); err != nil {
 			return fmt.Errorf("resetting to base: %w", err)
 		}
+		s.repaired(rec, "reset an unrecorded commit", "head", head)
 	}
 	if err := s.recoverTouched(ctx, rec); err != nil {
 		return err
@@ -104,6 +107,7 @@ func (s *Service) checkWorktree(ctx context.Context, c *change) (bool, error) {
 	if err := s.store.persist(rec); err != nil {
 		return false, err
 	}
+	s.repaired(rec, "discarded a change whose worktree is unusable", "reason", reason)
 	s.cleanup(ctx, rec)
 	return false, nil
 }
@@ -151,6 +155,7 @@ func (s *Service) abortRebase(ctx context.Context, rec *Record) error {
 			if _, err := s.git(ctx, rec, gitx.Opts{}, "rebase", "--abort"); err != nil {
 				return fmt.Errorf("aborting rebase: %w", err)
 			}
+			s.repaired(rec, "aborted a rebase in progress")
 			return nil
 		}
 	}
@@ -173,6 +178,7 @@ func (s *Service) detectPublished(ctx context.Context, c *change, mode reconcile
 	if rec.Commit == nil || !s.onBranch(ctx, rec, *rec.Commit) {
 		return false, nil
 	}
+	s.repaired(rec, "found the change already published", "commit", *rec.Commit)
 	s.markPublished(ctx, c, *rec.Commit, 0, nil)
 	return true, nil
 }
@@ -220,8 +226,8 @@ func (s *Service) recoverTouched(ctx context.Context, rec *Record) error {
 	}
 	src := s.opts.Config.SourceByName(rec.Source)
 	for _, p := range gitx.SplitNUL(out) {
-		if b := bundleOf(src, config.HarnessID(rec.Harness), p); b != "" {
-			touchBundle(rec, b)
+		if b := bundleOf(src, config.HarnessID(rec.Harness), p); b != "" && touchBundle(rec, b) {
+			s.repaired(rec, "recovered a touched bundle", "bundle", b)
 		}
 	}
 	return nil
@@ -230,6 +236,25 @@ func (s *Service) recoverTouched(ctx context.Context, rec *Record) error {
 // discardUnstaged restores touched bundles to the index, which records
 // every applied mutation.
 func (s *Service) discardUnstaged(ctx context.Context, rec *Record) error {
+	if len(rec.TouchedBundles) == 0 {
+		return nil
+	}
+	status, err := s.git(ctx, rec, gitx.Opts{}, append([]string{"status", "--porcelain", "-z", "--ignored", "-uall", "--"}, rec.TouchedBundles...)...)
+	if err != nil {
+		return fmt.Errorf("reading touched bundles: %w", err)
+	}
+	var unstaged []string
+	for _, entry := range gitx.SplitNUL(status) {
+		// Porcelain v1 entries are "XY path": Y is the worktree state; "??"
+		// and "!!" are untracked and ignored files. Staged-only entries are
+		// the record of applied mutations and stay.
+		if len(entry) > 3 && (entry[1] != ' ' || entry[:2] == "??" || entry[:2] == "!!") {
+			unstaged = append(unstaged, entry[3:])
+		}
+	}
+	if len(unstaged) == 0 {
+		return nil
+	}
 	var tracked []string
 	for _, b := range rec.TouchedBundles {
 		out, err := s.git(ctx, rec, gitx.Opts{}, "ls-files", "-z", "--", b)
@@ -245,12 +270,16 @@ func (s *Service) discardUnstaged(ctx context.Context, rec *Record) error {
 			return fmt.Errorf("restoring touched bundles: %w", err)
 		}
 	}
-	if len(rec.TouchedBundles) > 0 {
-		if _, err := s.git(ctx, rec, gitx.Opts{}, append([]string{"clean", "-fdxq", "--"}, rec.TouchedBundles...)...); err != nil {
-			return fmt.Errorf("cleaning touched bundles: %w", err)
-		}
+	if _, err := s.git(ctx, rec, gitx.Opts{}, append([]string{"clean", "-fdxq", "--"}, rec.TouchedBundles...)...); err != nil {
+		return fmt.Errorf("cleaning touched bundles: %w", err)
 	}
+	s.repaired(rec, "discarded unstaged work", "paths", strings.Join(unstaged, ", "))
 	return nil
+}
+
+// repaired logs one reconciliation repair.
+func (s *Service) repaired(rec *Record, what string, args ...any) {
+	s.log.Info("change repaired: "+what, append([]any{"change_id", rec.ChangeID}, args...)...)
 }
 
 // bundleOf returns the bundle directory containing a repo-relative path, or

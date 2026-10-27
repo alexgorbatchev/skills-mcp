@@ -23,7 +23,7 @@ func ValidateDir(dir string, src *config.Source, getenv func(string) (string, bo
 		return nil, fmt.Errorf("%s is not a directory", dir)
 	}
 	var problems []string
-	var files []string
+	var files, links []string
 	ignoreFiles := map[string][]byte{}
 	var keep []string
 	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
@@ -36,7 +36,7 @@ func ValidateDir(dir string, src *config.Source, getenv func(string) (string, bo
 		case d.IsDir() && d.Name() == "node_modules":
 			return fs.SkipDir
 		case d.Type()&fs.ModeSymlink != 0:
-			problems = append(problems, fmt.Sprintf("%s: %s: symbolic links are not served", CodeSymlink, rel))
+			links = append(links, rel)
 		case d.Type().IsRegular():
 			files = append(files, rel)
 			if src.IgnoreFile != "" && d.Name() == src.IgnoreFile {
@@ -59,16 +59,18 @@ func ValidateDir(dir string, src *config.Source, getenv func(string) (string, bo
 	if err != nil {
 		return nil, err
 	}
-	var rules *IgnoreRules
-	if src.IgnoreFile != "" {
-		rules = NewIgnoreRules(src.IgnoreFile, ignoreFiles, keep)
+	rules := NewIgnoreRules(src.IgnoreFile, ignoreFiles, keep)
+	for _, rel := range links {
+		if !rules.Excluded(rel) {
+			problems = append(problems, fmt.Sprintf("%s: %s: symbolic links are not served", CodeSymlink, rel))
+		}
 	}
 	ctx := TemplateContext{Vars: map[string]string{}, Env: src.Template.Env, Getenv: getenv}
 	for k, v := range src.Template.Vars {
 		ctx.Vars[k] = v
 	}
 	for _, rel := range files {
-		if rules != nil && rules.Excluded(rel) {
+		if rules.Excluded(rel) {
 			if rel == SkillFile {
 				problems = append(problems, fmt.Sprintf("%s: %s: ignore rules match SKILL.md", CodeMissingSkillMD, rel))
 			}

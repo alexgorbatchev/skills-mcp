@@ -2,9 +2,11 @@ package authoring
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -266,3 +268,35 @@ func TestStoreHelpers(t *testing.T) {
 		t.Fatal("bundleOf outside roots")
 	}
 }
+
+func TestRepairsAreLogged(t *testing.T) {
+	e := newEnv(t)
+	var logs strings.Builder
+	var mu sync.Mutex
+	e.svc.log = slog.New(slog.NewTextHandler(writerFunc(func(p []byte) (int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return logs.Write(p)
+	}), nil))
+	id := e.open()
+	editGolang(t, e, id, "body", "agent")
+	editGolang(t, e, id, "agent", "agent two") // staged-only state: no repair logged
+	mu.Lock()
+	if strings.Contains(logs.String(), "change repaired") {
+		t.Fatalf("staged edits logged as repairs:\n%s", logs.String())
+	}
+	mu.Unlock()
+	write(t, filepath.Join(e.worktree(id), "skills/agent/golang/stray.md"), "x")
+	if _, err := e.svc.Read(context.Background(), ReadArgs{ChangeID: id, Bundle: "skills/agent/golang"}, 100000); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.Contains(logs.String(), "change repaired: discarded unstaged work") || !strings.Contains(logs.String(), "change_id="+id) {
+		t.Fatalf("repair not logged:\n%s", logs.String())
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }

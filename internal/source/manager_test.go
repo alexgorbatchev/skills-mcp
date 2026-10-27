@@ -638,3 +638,17 @@ func TestStaleRebuildNeverRegressesViews(t *testing.T) {
 		t.Fatalf("stale rebuild regressed the view to %q", got)
 	}
 }
+
+func TestRefreshWaitHonorsDeadline(t *testing.T) {
+	h := newHarness(t, gitSourceConfig("file:///x"))
+	h.init()
+	st := h.m.byName["reg"]
+	st.refreshLock <- struct{}{} // a long refresh holds the lock
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err := h.m.Refresh(ctx, "reg", RefreshOptions{})
+	if err == nil || !strings.Contains(err.Error(), "waiting to refresh reg") {
+		t.Fatalf("Refresh = %v", err)
+	}
+	<-st.refreshLock
+}

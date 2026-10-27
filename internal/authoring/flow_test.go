@@ -213,6 +213,9 @@ func TestOpenErrors(t *testing.T) {
 	}
 	e.cfg.Sources[2].Writable = true
 	_, err := e.svc.Open(ctx, config.ClaudeCode, "ro", "s")
+	mustErr(t, err, "has no deny_patterns")
+	e.cfg.Sources[2].DenyPatterns = e.cfg.Sources[0].DenyPatterns
+	_, err = e.svc.Open(ctx, config.ClaudeCode, "ro", "s")
 	mustErr(t, err, "has no snapshot")
 }
 

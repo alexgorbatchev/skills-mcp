@@ -99,6 +99,13 @@ func (s *Service) Recover(ctx context.Context) {
 		if c.rec.State != StateOpen {
 			continue
 		}
+		if err := s.checkSource(c.rec.Source); err != nil {
+			s.log.Warn("change refers to an unusable source", "change_id", c.rec.ChangeID, "error", err)
+			if s.store.expired(c.rec.UpdatedAt, s.opts.Config.ChangeTTL) {
+				s.retire(c, "change expired; "+err.Error())
+			}
+			continue
+		}
 		if err := s.reconcile(ctx, c, reconcileStartup); err != nil {
 			s.log.Warn("reconciling change failed", "change_id", c.rec.ChangeID, "error", err)
 		}
@@ -156,7 +163,10 @@ func (s *Service) Sweep(ctx context.Context) {
 			return
 		}
 		expired := s.store.expired(c.rec.UpdatedAt, s.opts.Config.ChangeTTL)
+		srcErr := s.checkSource(c.rec.Source)
 		switch {
+		case c.rec.State == StateOpen && expired && srcErr != nil:
+			s.retire(c, "change expired; "+srcErr.Error())
 		case c.rec.State == StateOpen && expired:
 			if err := s.discard(ctx, c, "change expired", reconcileNormal); err != nil {
 				s.log.Warn("discarding expired change failed", "change_id", c.rec.ChangeID, "error", err)
@@ -195,6 +205,8 @@ func (s *Service) Open(_ context.Context, harness config.HarnessID, sourceName, 
 		return OpenResult{}, fmt.Errorf("source %q is a path source; only git sources accept changes", sourceName)
 	case !src.Writable:
 		return OpenResult{}, fmt.Errorf("source %q is not writable", sourceName)
+	case len(src.DenyPatterns) == 0:
+		return OpenResult{}, fmt.Errorf("source %q has no deny_patterns", sourceName)
 	}
 	repo := s.opts.Sources.Repo(sourceName)
 	base := s.opts.Sources.Current(sourceName)
@@ -288,6 +300,39 @@ func (s *Service) cleanup(ctx context.Context, rec *Record) {
 	})
 }
 
+// checkSource reports whether a change's source still accepts changes: it
+// exists, is a writable git source with deny patterns, and has a clone.
+// Operations on changes of other sources are refused without touching Git.
+func (s *Service) checkSource(name string) error {
+	src := s.opts.Config.SourceByName(name)
+	switch {
+	case src == nil:
+		return fmt.Errorf("source %q is no longer configured", name)
+	case src.Kind != config.KindGit:
+		return fmt.Errorf("source %q is not a git source", name)
+	case !src.Writable:
+		return fmt.Errorf("source %q is not writable", name)
+	case len(src.DenyPatterns) == 0:
+		return fmt.Errorf("source %q has no deny_patterns", name)
+	case !s.opts.Sources.Repo(name).Exists():
+		return fmt.Errorf("source %q has no clone yet", name)
+	}
+	return nil
+}
+
+// retire discards a change without Git, for a source that is unusable.
+// Its directory is deleted with the record once it expires; startup prunes
+// the worktree registration if the source returns.
+func (s *Service) retire(c *change, reason string) {
+	c.rec.State = StateDiscarded
+	c.rec.LastError = strPtr(reason)
+	c.rec.UpdatedAt = s.store.timestamp()
+	if err := s.store.persist(c.rec); err != nil {
+		s.log.Warn("persisting retired change failed", "change_id", c.rec.ChangeID, "error", err)
+	}
+	s.log.Info("change discarded", "change_id", c.rec.ChangeID, "reason", reason)
+}
+
 // lockOpen acquires an open change's mutex.
 func (s *Service) lockOpen(ctx context.Context, id string) (*change, error) {
 	c, ok := s.store.get(id)
@@ -300,6 +345,10 @@ func (s *Service) lockOpen(ctx context.Context, id string) (*change, error) {
 	if c.rec.State != StateOpen {
 		c.release()
 		return nil, fmt.Errorf("%w: %s is %s", ErrNotOpen, id, c.rec.State)
+	}
+	if err := s.checkSource(c.rec.Source); err != nil {
+		c.release()
+		return nil, err
 	}
 	return c, nil
 }

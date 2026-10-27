@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/alexgorbatchev/skills-mcp/internal/config"
 )
 
 func TestAcquireHonorsContext(t *testing.T) {
@@ -262,5 +264,56 @@ func TestFailedStageRestoresExistingFile(t *testing.T) {
 	}
 	if err := os.Remove(lock); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRemovedSourceDoesNotCrashRecovery(t *testing.T) {
+	e := newEnv(t)
+	id := e.open()
+	sources := e.cfg.Sources
+	e.cfg.Sources = nil // the source was removed from config.yaml
+	e.start()
+	e.svc.Recover(context.Background()) // must not panic
+	_, err := e.svc.WriteFile(context.Background(), WriteArgs{ChangeID: id, Bundle: "skills/agent/golang", Path: "a", Content: "x"})
+	mustErr(t, err, "no longer configured")
+	_, err = e.submit(id, "m")
+	mustErr(t, err, "no longer configured")
+	e.clock.advance(25 * time.Hour)
+	e.svc.Sweep(context.Background())
+	if rec := e.record(id); rec.State != StateDiscarded || !strings.Contains(*rec.LastError, "no longer configured") {
+		t.Fatalf("record = %+v", rec)
+	}
+	e.cfg.Sources = sources
+	e.start()
+	stale := e.open()
+	e.clock.advance(25 * time.Hour)
+	e.cfg.Sources = []*config.Source{{Name: "reg", Kind: config.KindPath}}
+	e.start()
+	e.svc.Recover(context.Background())
+	if rec := e.record(stale); rec.State != StateDiscarded || !strings.Contains(*rec.LastError, "not a git source") {
+		t.Fatalf("stale = %+v", rec)
+	}
+}
+
+func TestReadOnlySourceRefusesOpenChanges(t *testing.T) {
+	e := newEnv(t)
+	id := e.open()
+	editGolang(t, e, id, "body", "secret.example")
+	src := e.cfg.Sources[0]
+	src.Writable = false
+	before := e.remote.tip()
+	_, err := e.submit(id, "m")
+	mustErr(t, err, "is not writable")
+	src.Writable = true
+	patterns := src.DenyPatterns
+	src.DenyPatterns = nil
+	_, err = e.submit(id, "m")
+	mustErr(t, err, "has no deny_patterns")
+	if e.remote.tip() != before {
+		t.Fatal("pushed from an unusable source")
+	}
+	src.DenyPatterns = patterns
+	if err := e.svc.checkDeny(context.Background(), &Record{}, &config.Source{Name: "x"}); err == nil {
+		t.Fatal("deny scan without patterns passed")
 	}
 }

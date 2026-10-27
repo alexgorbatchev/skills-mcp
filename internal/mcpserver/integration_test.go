@@ -94,7 +94,7 @@ func newFixture(t *testing.T, withAuthoring bool, budget int) *fixture {
 			{Path: "skills/user", Invocation: config.User},
 		},
 		Template:     config.Template{Vars: map[string]string{"repo_root": "{snapshot}"}},
-		DenyPatterns: nil,
+		DenyPatterns: []*regexp.Regexp{regexp.MustCompile(`secret\.example`)},
 	}
 	cfg := &config.Config{
 		FetchInterval: time.Minute, SubmitTimeout: 5 * time.Minute, SnapshotRetention: time.Hour, ChangeTTL: time.Hour,

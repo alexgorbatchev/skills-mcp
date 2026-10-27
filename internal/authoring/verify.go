@@ -239,6 +239,9 @@ func (s *Service) protectedPaths(ctx context.Context, rec *Record, src *config.S
 // checkDeny scans added lines, added and renamed paths, and the commit
 // message against the source's deny patterns.
 func (s *Service) checkDeny(ctx context.Context, rec *Record, src *config.Source) error {
+	if len(src.DenyPatterns) == 0 {
+		return fmt.Errorf("source %s has no deny_patterns; refusing to push unscanned content", src.Name)
+	}
 	commit := *rec.Commit
 	patch, err := s.git(ctx, rec, gitx.Opts{}, "diff-tree", "-r", "-p", "-a", "-U0", "-M", "--no-ext-diff", "--no-textconv", "--no-color", rec.BaseRevision, commit)
 	if err != nil {

@@ -71,11 +71,11 @@ type sourceState struct {
 	revDir   string
 	hash     string
 
-	refreshMu sync.Mutex // whole Refresh runs
-	srcMu     sync.Mutex // Git commands on repo.git and worktrees
-	indexMu   sync.Mutex
-	index     Index
-	records   sync.Map // revision → *catalog.RenderRecord
+	refreshLock chan struct{} // one-slot: whole Refresh runs; waiting honors the caller's context
+	srcMu       sync.Mutex    // Git commands on repo.git and worktrees
+	indexMu     sync.Mutex
+	index       Index
+	records     sync.Map // revision → *catalog.RenderRecord
 
 	retryDelay time.Duration
 	nextRetry  time.Time
@@ -102,9 +102,10 @@ func NewManager(opts Options) *Manager {
 	m := &Manager{opts: opts, byName: map[string]*sourceState{}, logged: map[string]bool{}}
 	for _, src := range opts.Config.Sources {
 		st := &sourceState{
-			src:    src,
-			revDir: filepath.Join(opts.Dirs.SourceCache(src.Name), "rev"),
-			hash:   renderContextHash(src, opts.Getenv),
+			src:         src,
+			revDir:      filepath.Join(opts.Dirs.SourceCache(src.Name), "rev"),
+			refreshLock: make(chan struct{}, 1),
+			hash:        renderContextHash(src, opts.Getenv),
 		}
 		if src.Kind == config.KindGit {
 			st.repo = &Repo{Git: opts.Git, Dir: filepath.Join(opts.Dirs.SourceState(src.Name), "repo.git"), URL: src.URL, Branch: src.Branch}
@@ -312,8 +313,12 @@ func (m *Manager) Refresh(ctx context.Context, name string, opts RefreshOptions)
 	if !ok {
 		return fmt.Errorf("unknown source %q", name)
 	}
-	st.refreshMu.Lock()
-	defer st.refreshMu.Unlock()
+	select {
+	case st.refreshLock <- struct{}{}:
+	case <-ctx.Done():
+		return fmt.Errorf("waiting to refresh %s: %w", name, ctx.Err())
+	}
+	defer func() { <-st.refreshLock }()
 	var errs []error
 	var err error
 	if st.src.Kind == config.KindGit {

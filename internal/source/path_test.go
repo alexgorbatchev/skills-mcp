@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexgorbatchev/skills-mcp/internal/catalog"
 	"github.com/alexgorbatchev/skills-mcp/internal/config"
 )
 
@@ -205,5 +206,48 @@ func TestPathSourceRefusesSymlinkedRoot(t *testing.T) {
 	err := h.m.Refresh(context.Background(), "local", RefreshOptions{})
 	if err == nil || !strings.Contains(err.Error(), "is a symbolic link") {
 		t.Fatalf("Refresh = %v", err)
+	}
+}
+
+func TestInstalledDependenciesAndIgnoredLinksDoNotRefuse(t *testing.T) {
+	real := t.TempDir()
+	writeFile(t, filepath.Join(real, "agent/a/SKILL.md"), skillDoc("a", ""), 0o644)
+	writeFile(t, filepath.Join(real, "agent/a/node_modules/pkg/cli.js"), "x", 0o755)
+	writeFile(t, filepath.Join(real, "agent/a/.registry-ignore"), "fixtures/\n", 0o644)
+	if err := os.MkdirAll(filepath.Join(real, "agent/a/node_modules/.bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../pkg/cli.js", filepath.Join(real, "agent/a/node_modules/.bin/cli")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(real, "agent/a/fixtures"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../SKILL.md", filepath.Join(real, "agent/a/fixtures/link.md")); err != nil {
+		t.Fatal(err)
+	}
+	src := pathSource(real)
+	src.IgnoreFile = ".registry-ignore"
+	h := newHarness(t, src)
+	h.init()
+	h.refresh("local")
+	v := h.lastView(config.ClaudeCode)
+	if v.Skill("a") == nil || len(v.Diagnostics) != 0 {
+		t.Fatalf("skill refused: %+v", v.Diagnostics)
+	}
+	problems, err := catalog.ValidateDir(filepath.Join(real, "agent/a"), src, os.LookupEnv)
+	if err != nil || len(problems) != 0 {
+		t.Fatalf("bundle validate disagrees: %v, %v", problems, err)
+	}
+	// An unignored link still refuses the bundle in both.
+	if err := os.Symlink("SKILL.md", filepath.Join(real, "agent/a/real-link.md")); err != nil {
+		t.Fatal(err)
+	}
+	h.refresh("local")
+	if got := diagCodes(h.lastView(config.ClaudeCode).Diagnostics); got != "symlink@agent/a" {
+		t.Fatalf("diagnostics = %s", got)
+	}
+	if problems, _ := catalog.ValidateDir(filepath.Join(real, "agent/a"), src, os.LookupEnv); len(problems) != 1 {
+		t.Fatalf("bundle validate = %v", problems)
 	}
 }

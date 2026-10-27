@@ -21,6 +21,9 @@ import (
 	"github.com/alexgorbatchev/skills-mcp/internal/config"
 )
 
+// nodeModules directories hold installed dependencies, never source content.
+const nodeModules = "node_modules"
+
 // Kinds of non-regular tree entries that are never materialized.
 const (
 	specialSymlink   = "symlink"
@@ -104,7 +107,7 @@ func (e *extraction) stage(ctx context.Context) (t *tree, err error) {
 		if b.special {
 			continue
 		}
-		files, diags, err := filterBundle(dir, b.path, e.src)
+		files, diags, err := filterBundle(dir, b.path, e.src, specials)
 		if err != nil {
 			return nil, err
 		}
@@ -148,6 +151,17 @@ func (e *extraction) finish(ctx context.Context, t *tree) (_ *tree, err error) {
 	return t, nil
 }
 
+func specialDiagnostic(src *config.Source, sp special, bundle, rel string) catalog.Diagnostic {
+	code := catalog.CodeSymlink
+	if sp.kind == specialSubmodule {
+		code = catalog.CodeSubmodule
+	}
+	return catalog.Diagnostic{
+		Code: code, Source: src.Name, Bundle: bundle, File: rel,
+		Message: fmt.Sprintf("%s entries are not served", sp.kind),
+	}
+}
+
 type foundBundle struct {
 	path    string
 	special bool
@@ -188,22 +202,8 @@ func findBundles(dir string, src *config.Source, specials []special) ([]foundBun
 		}
 	}
 	for _, sp := range specials {
-		for bp, b := range byPath {
-			if sp.path != bp && !strings.HasPrefix(sp.path, bp+"/") {
-				continue
-			}
-			code := catalog.CodeSymlink
-			if sp.kind == specialSubmodule {
-				code = catalog.CodeSubmodule
-			}
-			rel := strings.TrimPrefix(strings.TrimPrefix(sp.path, bp), "/")
-			if rel == "" {
-				rel = path.Base(bp)
-			}
-			b.diags = append(b.diags, catalog.Diagnostic{
-				Code: code, Source: src.Name, Bundle: bp, File: rel,
-				Message: fmt.Sprintf("%s entries are not served", sp.kind),
-			})
+		if b, ok := byPath[sp.path]; ok && b.special {
+			b.diags = append(b.diags, specialDiagnostic(src, sp, sp.path, path.Base(sp.path)))
 		}
 	}
 	out := make([]foundBundle, 0, len(byPath))
@@ -216,19 +216,16 @@ func findBundles(dir string, src *config.Source, specials []special) ([]foundBun
 
 // filterBundle applies the source's ignore file to one bundle, deleting
 // excluded files, and returns the remaining source files.
-func filterBundle(dir, bundle string, src *config.Source) ([]string, []catalog.Diagnostic, error) {
+func filterBundle(dir, bundle string, src *config.Source, specials []special) ([]string, []catalog.Diagnostic, error) {
 	base := filepath.Join(dir, filepath.FromSlash(bundle))
 	files, err := listFiles(base)
 	if err != nil {
 		return nil, nil, err
 	}
-	if src.IgnoreFile == "" {
-		return files, nil, nil
-	}
 	ignoreFiles := map[string][]byte{}
 	var keep []string
 	for _, f := range files {
-		if path.Base(f) == src.IgnoreFile {
+		if src.IgnoreFile != "" && path.Base(f) == src.IgnoreFile {
 			data, err := os.ReadFile(filepath.Join(base, filepath.FromSlash(f)))
 			if err != nil {
 				return nil, nil, fmt.Errorf("reading %s: %w", f, err)
@@ -246,6 +243,14 @@ func filterBundle(dir, bundle string, src *config.Source) ([]string, []catalog.D
 	rules := catalog.NewIgnoreRules(src.IgnoreFile, ignoreFiles, keep)
 	var kept []string
 	var diags []catalog.Diagnostic
+	// Links and submodules inside the bundle refuse it unless the ignore
+	// rules exclude them, matching `bundle validate`.
+	for _, sp := range specials {
+		rel, ok := strings.CutPrefix(sp.path, bundle+"/")
+		if ok && !rules.Excluded(rel) {
+			diags = append(diags, specialDiagnostic(src, sp, bundle, rel))
+		}
+	}
 	for _, f := range files {
 		if !rules.Excluded(f) {
 			kept = append(kept, f)

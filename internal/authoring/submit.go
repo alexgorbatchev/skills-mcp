@@ -49,6 +49,10 @@ func (s *Service) Submit(reqCtx context.Context, id, message string, progress fu
 		defer c.release()
 		return SubmitResult{}, fmt.Errorf("%w: %s is discarded", ErrNotOpen, id)
 	}
+	if err := s.checkSource(c.rec.Source); err != nil {
+		c.release()
+		return SubmitResult{}, err
+	}
 	type outcome struct {
 		res SubmitResult
 		err error

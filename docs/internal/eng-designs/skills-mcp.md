@@ -1,6 +1,6 @@
 ---
 created_on: 2026-10-26 10:13
-last_modified: 2026-10-26 19:02
+last_modified: 2026-10-26 19:24
 status: current
 ---
 
@@ -572,7 +572,7 @@ interface PiSkillsLibrarySettings {
 
 ### Locks
 
-- **Refresh mutex** (per source): held for the whole of a `Refresh` run, so runs on one source never overlap.
+- **Refresh mutex** (per source): held for the whole of a `Refresh` run, so runs on one source never overlap. Waiting for it honors the caller's context, so a submit's deadline bounds a wait behind a long background refresh.
 - **View mutex** (process-wide): serializes harness view rebuilds and diff application.
 - **Index mutex** (per source): serializes every read and read-modify-write of `SnapshotIndex` and its file.
 - **Catalog mutex** (process-wide, leaf): guards the per-revision catalog cache.
@@ -611,8 +611,8 @@ Shutdown itself writes no change record. Every child also gets `SysProcAttr.Pdea
 ### Snapshot extraction
 
 1. Populate a new `os.MkdirTemp(rev, ".tmp-<revision>-")` directory. For `git` sources, list the tree with `git ls-tree -r -z <sha> -- <expanded roots and harness roots>` and write each blob from `git cat-file --batch`, so nothing outside the served roots (for example a repository-root `package.json` that declares bundles as workspace members) reaches the snapshot. A tree path that is not local, has an empty, `.`, `..`, or `.git` component, or lies outside the roots fails the extraction; clone and fetch also run with `transfer.fsckObjects=true`; entries with mode `120000` (symlink) or `160000` (submodule) are not written and are recorded. For `path` sources, refuse a root whose path below the source contains a symbolic link, then walk the expanded roots with `Lstat` and copy regular files into `rev/.tmp-path-<random>/`; symbolic links are not followed or copied and are recorded. The path source revision is computed from the copied tree after step 3's ignore evaluation, and the remaining steps use it.
-2. Find bundles: every directory directly under an expanded root or harness root (harness roots expanded for all three `HarnessId` values) that contains `SKILL.md` or a recorded entry named `SKILL.md`, and every recorded symlink or submodule entry directly under such a root, which becomes a bundle with a `symlink` or `submodule` diagnostic. A recorded symlink inside a bundle produces a `symlink` diagnostic, and a recorded submodule a `submodule` diagnostic, for that bundle.
-3. When `ignore_file` is set, evaluate it per bundle (`internal/catalog/ignore.go`): each ignore file at or below the bundle directory applies gitignore patterns to paths below its own directory, and each of its lines starting with `./` also excludes that path prefix relative to its own directory. Ignore files above the bundle directory are not read. Every `node_modules` path and every ignore file is excluded. Paths listed in a `prepare` rule's `keep`, relative to a directory that contains its `when_file`, are exempt. Excluded files are deleted from the temporary directory. When the rules match the bundle's `SKILL.md`, it is kept and the bundle gets a `missing_skill_md` diagnostic.
+2. Find bundles: every directory directly under an expanded root or harness root (harness roots expanded for all three `HarnessId` values) that contains `SKILL.md` or a recorded entry named `SKILL.md`, and every recorded symlink or submodule entry directly under such a root, which becomes a bundle with a `symlink` or `submodule` diagnostic. A recorded symlink inside a bundle produces a `symlink` diagnostic, and a recorded submodule a `submodule` diagnostic, for that bundle, unless the bundle's ignore rules (step 3) exclude its path; `bundle validate` applies the same rule.
+3. When `ignore_file` is set, evaluate it per bundle (`internal/catalog/ignore.go`): each ignore file at or below the bundle directory applies gitignore patterns to paths below its own directory, and each of its lines starting with `./` also excludes that path prefix relative to its own directory. Ignore files above the bundle directory are not read. Every ignore file is excluded. Every `node_modules` path is excluded whether or not `ignore_file` is set, and path sources never copy `node_modules` directories. Paths listed in a `prepare` rule's `keep`, relative to a directory that contains its `when_file`, are exempt. Excluded files are deleted from the temporary directory. When the rules match the bundle's `SKILL.md`, it is kept and the bundle gets a `missing_skill_md` diagnostic.
 4. Render every remaining regular file inside each bundle, except binary files (NUL byte in the first 8,000 bytes), with the source's template context (see [Template](#template)). `file_dir`, `file_path`, and `{snapshot}` render to the final `rev/<revision>/` paths, never the temporary directory. A bundle with any extraction diagnostic keeps its raw files.
 5. Prepare: before any rule runs, compute each rule's matching directories once from the filtered source tree: every directory inside a bundle without diagnostics that contains `when_file`. Directories created by `prepare` are never matched. Then, for each rule in configuration order, run `run` in each of its matching directories with the daemon's environment, a timeout of the smaller of the rule's `timeout` and the caller's remaining deadline, the shutdown context checked before each start, and the process handling in [Git execution](#git-execution). When the shutdown context or the caller's deadline ends a run, the extraction is aborted: the temporary directory is deleted, no `RenderRecord` is written, and the cancellation error is returned. Afterwards, walking the directory with `Lstat`: a symbolic link whose resolved target leaves that directory, or a non-zero exit or timeout, gives the bundle a `prepare_failed` diagnostic carrying the last line of stderr, and the `RenderRecord` is marked `prepare_retry`; every regular file with a link count above 1 is replaced by a private copy (with owner write permission granted on its directory for the copy), so no inode is shared with a package cache. This walk runs after every run, successful or not, and a file that cannot be unshared aborts the extraction before permissions are set.
 6. Set permissions per section 5, walking with `Lstat`; symbolic links are left unchanged.
@@ -745,6 +745,7 @@ Checks run in this order; the first failure determines the response.
 
 ### Authoring
 
+- Authoring tools reject a change whose source is no longer configured, is not a writable git source, has empty `deny_patterns`, or has no clone; such changes are left untouched until they expire and are then discarded without Git. The deny scan also refuses to run with no patterns.
 - Authoring tools reject a `change_id` that is unknown or not `open`, except that `skill_change_submit` returns the recorded result for a `submitted` change.
 - `skill_change_open` rejects a source that is missing, is a `path` source, or has `writable: false` (Q8A1).
 - `skill_edit`, `skill_write_file`, and `skill_change_read` reject a `bundle` that fails the bundle-directory rule or has no `SKILL.md` in the worktree.
@@ -1497,3 +1498,13 @@ Outcome: Q11A2 restated as a generic, configuration-driven `prepare` step (like 
 | Unsharing | Unshare failures no longer stop the walk; any remaining failure aborts the extraction. | Specified in section 8 |
 | Path source roots | A symbolic link in a root path fails the refresh. | Specified in section 8 |
 | Root paths | Configuration rejects root paths that are not in clean form. | Implemented and tested |
+
+### A.19 Implementation review 3: findings applied
+
+| Topic | Revision | Status |
+|---|---|---|
+| Unusable sources | A change whose source was removed, became a path source, became read-only, or lost its deny patterns is refused; startup and the sweep never touch Git for it and discard it at expiry. | Specified in section 9 |
+| Empty deny patterns | The deny scan fails closed without patterns. | Specified in section 9 |
+| Installed dependencies | `node_modules` is always excluded; links excluded by ignore rules do not refuse a bundle, in extraction and `bundle validate` alike. | Specified in section 8 |
+| Refresh waits | The refresh mutex wait honors the caller's deadline. | Specified in section 8 |
+| Repair logging | Every reconciliation repair is logged at `info` with the change ID. | Implemented and tested |

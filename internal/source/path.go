@@ -38,6 +38,8 @@ func populatePath(root string, roots []string) func(ctx context.Context, dir str
 					return err
 				}
 				switch {
+				case d.IsDir() && d.Name() == nodeModules:
+					return fs.SkipDir // installed dependencies are never source content
 				case d.Type()&fs.ModeSymlink != 0:
 					target, err := os.Readlink(p)
 					if err != nil {
