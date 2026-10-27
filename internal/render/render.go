@@ -151,7 +151,7 @@ func Diagnostics(ds []catalog.Diagnostic) string {
 		return ""
 	}
 	head := element("catalog_diagnostics", []Attr{{"count", strconv.Itoa(len(ds))}}) + "\n"
-	tail := "These skills are not loaded. Tell the user; `skills-mcp list` shows details.\n</catalog_diagnostics>\n"
+	tail := "These skills are not loaded. Tell the user; `skills-mcp catalog list` shows details.\n</catalog_diagnostics>\n"
 	var lines []string
 	size := len(head) + len(tail)
 	for i, d := range ds {

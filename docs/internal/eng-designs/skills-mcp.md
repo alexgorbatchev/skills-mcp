@@ -1,6 +1,6 @@
 ---
 created_on: 2026-10-26 10:13
-last_modified: 2026-10-26 17:21
+last_modified: 2026-10-26 18:30
 status: current
 ---
 
@@ -137,7 +137,7 @@ A go-sdk v1.8.0 stdio server with 50 registered tools uses 12.5 MB RSS after `to
 - Served skill files are immutable for the lifetime of a snapshot, and served files are rendered: an agent reading an absolute path sees the same text the tool returns.
 - Snapshot content from the source contains no symbolic links, and extraction never follows a link. `prepare` output may contain symbolic links only when they resolve inside the directory the rule ran in, and shares no inode with any file outside the snapshot.
 - Template rendering accepts only the tag forms in [Template](#template); `env()` reads only variables listed in the source's `template.env`.
-- A skill bundle with any diagnostic is not served, and the diagnostic reaches the user through every first-chunk skill load and every prompt on the affected harness, the daemon log, and `skills-mcp list`.
+- A skill bundle with any diagnostic is not served, and the diagnostic reaches the user through every first-chunk skill load and every prompt on the affected harness, the daemon log, and `skills-mcp catalog list`.
 - Authoring never writes into a served snapshot or into a user's working tree. Agents mutate change worktrees only through authoring tools.
 - Every check that gates a push runs against the exact commit being pushed, and a submit, once started, runs to completion independently of the client request.
 - Every JSON state file is written atomically (temporary file, `fsync`, rename).
@@ -231,8 +231,8 @@ one mcp.Server per harness, mounted at /mcp/<harness> (stateful Streamable HTTP,
 |---|---|---|
 | `$XDG_CONFIG_HOME/skills-mcp/config.yaml` | user | Daemon configuration, see `Config`. Local only; never committed. |
 | `$XDG_CONFIG_HOME/skills-mcp/env` | user | Optional `KEY=value` lines loaded by the systemd unit with `EnvironmentFile=-`: `PATH` (must include the `validate` and `prepare` interpreters, for example `bun` in `~/.bun/bin`), `SSH_AUTH_SOCK`, and values for `template.env` names. |
-| `$XDG_CONFIG_HOME/skills-mcp/token` | daemon | Bearer token: exactly 64 lowercase hex characters (32 random bytes), mode `0600`. Created by `serve` or `token` when absent: the token is written and synced to a temporary file with mode `0600` in the same directory, then `link`ed to the final name; on `EEXIST` the temporary file is removed and the existing file is used. Every read rejects content that is not exactly 64 hex characters (one trailing newline allowed) or a mode other than `0600`, and exits with status 1. |
-| `$XDG_STATE_HOME/skills-mcp/lock` | daemon | `flock` held by `serve` for its lifetime. |
+| `$XDG_CONFIG_HOME/skills-mcp/token` | daemon | Bearer token: exactly 64 lowercase hex characters (32 random bytes), mode `0600`. Created by `server run` or `token show` when absent: the token is written and synced to a temporary file with mode `0600` in the same directory, then `link`ed to the final name; on `EEXIST` the temporary file is removed and the existing file is used. Every read rejects content that is not exactly 64 hex characters (one trailing newline allowed) or a mode other than `0600`, and exits with status 1. |
+| `$XDG_STATE_HOME/skills-mcp/lock` | daemon | `flock` held by `server run` for its lifetime. |
 | `$XDG_STATE_HOME/skills-mcp/sources/<source>/repo.git` | daemon | Bare clone of a `git` source, including change branches. Cloned into `repo.git.tmp-<random>` and renamed into place; leftover `repo.git.tmp-*` directories are deleted at startup. |
 | `$XDG_STATE_HOME/skills-mcp/changes/.quarantine/` | daemon | Unparsable `change.json` files moved aside at startup, named `<change_id>.json`. |
 | `$XDG_STATE_HOME/skills-mcp/changes/<change_id>/change.json` | daemon | `ChangeRecord`. |
@@ -487,28 +487,34 @@ Scaffold with `go-scaffold`; module path `github.com/alexgorbatchev/skills-mcp`.
 | `.gitignore` | `bin/`, coverage output. |
 | `AGENTS.md` | Project instructions, written with `docs-writer`. |
 | `README.md` | CLI README, written with `docs-writer`. Includes client configuration with timeouts, systemd environment, native skill loading, the project-skill name overlap, prompt argument quoting in Claude Code, and the unsupported `allowed-tools` and `` !`command` `` features with the affected skills. |
-| `contrib/systemd/skills-mcp.service` | systemd user unit running `skills-mcp serve` with `EnvironmentFile=-%E/skills-mcp/env`, `KillMode=mixed` (SIGTERM to the daemon only), and `TimeoutStopSec=60`. |
-| `cmd/skills-mcp/main.go` | Entry point; calls `internal/cli`. |
-| `internal/cli/root.go` | Cobra root, `cobra-help-tree/v2`, `--version`, `--config`. |
-| `internal/cli/serve.go` | `serve`: take the lock, load config, ensure token, start source manager and HTTP server, handle SIGTERM and SIGINT per [Shutdown](#shutdown). |
-| `internal/cli/list.go` | `list [--harness <id>]`: build the catalog from the cache and print one line per skill, then every diagnostic on stderr; exits 1 when any diagnostic exists. |
-| `internal/cli/validate.go` | `validate [--source <name>] <bundle-dir>...`: run the structural, template, and symlink rules except the bundle-directory rule, using the configuration of `--source` (default `default_write_source`, required when that is null); exits 1 on failure. Cross-bundle uniqueness is checked by `list`. |
-| `internal/cli/token.go` | `token`: create the token file when absent and print the token to stdout. |
+| `contrib/systemd/skills-mcp.service` | systemd user unit running `skills-mcp server run` with `EnvironmentFile=-%E/skills-mcp/env`, `KillMode=mixed` (SIGTERM to the daemon only), and `TimeoutStopSec=60`. |
+| `skills/skills-mcp/SKILL.md` | Agent skill for operating the CLI; the only copy, kept in sync with the command tree by a test. |
+| `cmd/skills-mcp/main.go` | Entry point; prints errors with the home directory folded to `~` and exits 1. |
+| `cmd/skills-mcp/root.go` | Cobra root, `--version`, persistent `--config`; the completion command is disabled. |
+| `cmd/skills-mcp/help.go` | `cobra-help-tree/v2` tree help, `TechCatalog`, and the agent-mode skill alert. |
+| `cmd/skills-mcp/commands.go` | `server run` (signal handling, logger with folded paths, `daemon.Run`), `catalog list [--harness <id>]` (reads cached snapshots through `source.Manager.LoadIndexes`, never runs startup cleanup; one tree per harness in human mode, `key=value` lines in agent mode; diagnostics on stderr; exits 1 when any exist), `bundle validate [--source <name>] <bundle-dir>...` (exits 1 on any problem), and `token show`. |
+| `cmd/skills-mcp/skill.go` | `skill`: prints the Skills CLI install command and skill URL as a compiled-in constant. |
+| `internal/daemon/daemon.go` | `Run`: lock, config, token, startup sequence, HTTP server, background loops, shutdown sequence. |
+| `internal/homepath/homepath.go` | Shared helper folding the home directory to `~` in printed paths and free text. |
+| `internal/token/token.go` | Token creation through a temporary file and `link`, and strict reading. |
+| `internal/proc/proc.go` | Child processes in their own process group with timeouts, group SIGTERM then SIGKILL, `WaitDelay`, and `Pdeathsig` on Linux. |
 | `internal/config/config.go` | Parse `config.yaml`, apply defaults, validate fields. |
 | `internal/paths/paths.go` | XDG config, cache, and state directories for the app. |
-| `internal/gitx/git.go` | `git` exec wrapper: fixed environment and `-c` options, per-command timeouts, stderr capture, per-source mutex registry, `git push --porcelain` result parsing. |
+| `internal/gitx/git.go` | `git` exec wrapper over `internal/proc`: fixed environment and `-c` options, per-command timeouts, stderr capture, `git push --porcelain` result parsing. Source mutexes live in `internal/source/manager.go`. |
 | `internal/source/git.go` | Bare clone, refspec fetch, tree materialization from `git ls-tree -r -z` and `git cat-file --batch`. |
 | `internal/source/path.go` | `path` sources: recursive fsnotify watch with a 500 ms debounce, path source revision, materialization by copy. |
 | `internal/source/prepare.go` | `prepare` rule execution in extraction and verification trees: matching directories, argv execution through the shared process wrapper, link and inode checks, `prepare_failed` diagnostics. |
 | `internal/source/ignore.go` | `ignore_file` evaluation: gitignore patterns from ignore files at or below the bundle directory, the `./` prefix rule, `node_modules`, and the ignore files themselves. |
 | `internal/source/snapshot.go` | Shared extraction: ignore filtering, symlink and submodule diagnostics, render, `RenderRecord`, permissions, atomic rename, singleflight, startup cleanup, `RenderContextHash`. Also materializes a commit into `rev/.tmp-verify-*` for submit verification. |
 | `internal/source/manager.go` | `Refresh(source)`, refresh loop, `SnapshotIndex` persistence under the index mutex, snapshot retention, catalog rebuild requests, hourly `git maintenance run --auto` per source. |
-| `internal/catalog/parse.go` | Frontmatter split and YAML decode, file listing. |
+| `internal/catalog/parse.go` | Frontmatter split and YAML decode, served-name computation. |
 | `internal/catalog/template.go` | `RendererVersion`, tag scanner, and renderer for the accepted tag forms; returns rendered bytes and template diagnostics. |
 | `internal/catalog/build.go` | Root and harness-root expansion, author prefixing, precedence, `HarnessView` construction with diagnostics, per-revision catalog cache. |
-| `internal/catalog/validate.go` | Structural validation rules from section 9, producing `CatalogDiagnostic` values. |
+| `internal/catalog/parse.go` and `diagnostic.go` | Structural validation rules from section 9 and the `CatalogDiagnostic` and `RenderRecord` types. |
+| `internal/catalog/validatedir.go` | `bundle validate`: structural, symlink, and template rules on a directory on disk. |
 | `internal/catalog/diff.go` | Compare two `HarnessView`s into added, changed, and removed tools and prompts. |
 | `internal/render/render.go` | Skill and file result rendering, `<catalog_diagnostics>` element, byte-budget chunking, argument validation for `offset` and `revision`. |
+| `internal/mcpserver/schema.go` | Explicit JSON schemas for tool inputs; each object schema owns its `additionalProperties: false` node, as schemas must form a tree. |
 | `internal/mcpserver/http.go` | HTTP mux, `/mcp/<harness>` routing for GET, POST, and DELETE, `auth.RequireBearerToken` with a `crypto/subtle.ConstantTimeCompare` verifier returning `TokenInfo` without expiration and `RequireBearerTokenOptions.AllowMissingExpiration: true`, `StreamableHTTPOptions`, `http.CrossOriginProtection` wrapper. |
 | `internal/mcpserver/server.go` | One `mcp.Server` per harness with `ServerOptions.Capabilities` declaring `Tools` and `Prompts` with `ListChanged: true`, server instructions, view rebuilds and diff application under the view mutex, diagnostic logging. |
 | `internal/mcpserver/skilltools.go` | Skill tool definitions and handler, registered with generic `mcp.AddTool[In, Out]` and an explicit `InputSchema` so go-sdk validates arguments. |
@@ -595,7 +601,7 @@ interface PiSkillsLibrarySettings {
 
 On SIGTERM or SIGINT, within the unit's 60-second `TimeoutStopSec`:
 
-1. Cancel the process-wide shutdown context. Every pipeline and refresh checks it before starting each Git or `validate` command; once it is cancelled, a pipeline records `last_error` "interrupted by shutdown" under the change mutex it owns and starts nothing new.
+1. Cancel the process-wide shutdown context. Every submit pipeline checks it before each step; once it is cancelled, a pipeline records `last_error` "interrupted by shutdown" under the change mutex it owns and starts nothing new. The refresh, watch, sweep, and maintenance loops stop scheduling work; a refresh already running continues on the kill context and is stopped in step 4.
 2. Close the listener, close every MCP session through each harness server's `Sessions()` and `ServerSession.Close()` so standalone GET streams end, and call `http.Server.Shutdown` with a 5-second deadline followed by `http.Server.Close()`. Stop the refresh loop, watchers, sweep, and maintenance timer.
 3. Wait up to 30 seconds for running submit pipelines and Git commands.
 4. Kill the process group of every remaining child and wait up to 10 more seconds for the pipeline goroutines to record their own failures.
@@ -706,14 +712,14 @@ The tool handler acquires the change mutex and starts the pipeline in a goroutin
 
 ### Authoring-only (on every mutation)
 
-- A bundle directory is exactly `<expanded root path>/<name>` for one of the source's `roots` or `harness_roots`, expanded with the change's harness. Served bundles are found by the same rule, so it holds for every served bundle by construction. The `validate` CLI skips this rule.
+- A bundle directory is exactly `<expanded root path>/<name>` for one of the source's `roots` or `harness_roots`, expanded with the change's harness. Served bundles are found by the same rule, so it holds for every served bundle by construction. `skills-mcp bundle validate` skips this rule.
 - Bundle-relative paths are relative, contain no `..` element, contain no `.git` element, do not name a `.gitattributes` file, and are joined to the bundle directory and opened through an `os.Root` at the worktree root, so no symlink in any path component can leave the worktree.
 - Written content is valid UTF-8 without NUL bytes and is at most 1 MiB.
 - A mutation that leaves `SKILL.md` structurally invalid is rejected and leaves the file unchanged.
 
 ### Template
 
-Applied to every non-binary, non-ignored file in a bundle at snapshot extraction, at submit verification, and by the `validate` CLI.
+Applied to every non-binary, non-ignored file in a bundle at snapshot extraction, at submit verification, and by `skills-mcp bundle validate`.
 
 - Every occurrence of `<%` must start one of these tags, with any run of spaces and tabs where one space is shown:
   - `<%- name %>`, where `name` matches `^[a-z][a-z0-9_]*$`. It renders to `template.vars[name]` after `~/` and `{snapshot}` expansion, or to the built-in `file_dir` (absolute snapshot directory of the file being rendered) or `file_path` (absolute snapshot path of that file). Other names produce `unknown_template_variable`.
@@ -722,7 +728,7 @@ Applied to every non-binary, non-ignored file in a bundle at snapshot extraction
 - Rendering is a single pass: rendered values are not scanned again.
 - Each diagnostic carries the file and the 1-based line of the `<%`.
 
-### Catalog (on every view build, at submit verification, and in `list`)
+### Catalog (on every view build, at submit verification, and in `catalog list`)
 
 - A bundle with any structural or extraction diagnostic is excluded from every view and listed in the diagnostics of each view that would have included it.
 - Served names are unique across a source's `roots`. When two bundles of one source share a served name within one harness view, both are excluded with `duplicate_name`. A `harness_roots` skill with the same served name as a `roots` skill replaces it in that harness's view and is not a duplicate.
@@ -816,7 +822,7 @@ Diagnostics element, appended after `<bundled_files>` on a load whose `offset` i
 ```text
 <catalog_diagnostics count="1">
 disk-cleanup ai-registry:skills/user/disk-cleanup/SKILL.md:12 unsupported template tag "<%= file_dir %>"
-These skills are not loaded. Tell the user; `skills-mcp list` shows details.
+These skills are not loaded. Tell the user; `skills-mcp catalog list` shows details.
 </catalog_diagnostics>
 ```
 
@@ -927,7 +933,7 @@ interface ChangeDiscardResult { change_id: string; state: 'discarded' }
 Export the token in the shell profile:
 
 ```bash
-export SKILLS_MCP_TOKEN="$(skills-mcp token)"
+export SKILLS_MCP_TOKEN="$(skills-mcp token show)"
 ```
 
 Every client's tool-call timeout must exceed the worst-case submit duration with the default `submit_timeout` (600 seconds plus up to 180 seconds of post-push refresh), so each is set to 900 seconds. Claude Code's per-server `timeout` is a hard limit in milliseconds that also raises its first-byte timer and idle floor to 900 seconds; submit's progress notifications reset pi's timeout and Claude Code's idle window.
@@ -968,7 +974,7 @@ systemd: `systemctl --user import-environment SSH_AUTH_SOCK` before starting the
 ## 11. Implementation order
 
 1. Scaffold, `internal/paths`, `internal/config`, Cobra root, `token`.
-2. `internal/catalog` parse, template, validate, build (with author prefixing), and diff against fixture bundles; `list` and `validate` commands.
+2. `internal/catalog` parse, template, validate, build (with author prefixing), and diff against fixture bundles; `catalog list` and `bundle validate` commands.
 3. `internal/gitx` and `internal/source` with `file://` bare fixtures: clone into a temporary directory, refspec fetch, tree materialization, ignore evaluation, symlink handling, rendered snapshots, `RenderRecord`, `RenderContextHash` reset, singleflight, snapshot index, retention, offline startup, path source snapshots and recursive watching.
 4. `internal/render` with chunking, argument rules, and the diagnostics element.
 5. `internal/mcpserver`: HTTP options, request check order, `auth.RequireBearerToken`, cross-origin wrapper, per-harness servers, skill tools, prompts, server instructions, startup lock.
@@ -1007,7 +1013,7 @@ systemd: `systemctl --user import-environment SSH_AUTH_SOCK` before starting the
 - **mcpserver:** go-sdk client over `httptest`: `tools/list` contents and `_meta`, tool calls with and without `path`, path traversal rejection, binary files, prompts with and without diagnostics, request check order including unauthenticated unknown paths, bad `Host` without a token, cross-origin `POST`, and unauthenticated `GET`; a 2026-07-28 client receiving `-32022` and completing on a legacy version; `list_changed` on a description change over the GET stream delivered to a session idle for longer than any client timeout; none on a body-only or diagnostics-only change; a refused bundle disappearing from `tools/list` and appearing in diagnostics; `tools` and `prompts` capabilities advertised by a server that starts with no tools or prompts, followed by `list_changed` when they appear; a second `serve` failing on the lock; concurrent Refresh calls on one source serialized by the refresh mutex so `current` never moves backwards.
 - **authoring:** each mutation with valid and invalid input, staging of new files visible in `skill_change_diff`, `old_string` zero and multiple matches, `bundle` outside configured roots, `os.Root` escape attempts through `..` and symlinks, ignored-path and `.gitattributes` rejection, `os.Root` at the worktree root refusing a symlinked ancestor directory, NUL and invalid UTF-8 rejection, mutation after commit resetting `commit`, submit of a new skill whose body contains a deny pattern, deny pattern in a renamed path and in the message, deny scan unaffected by `diff.external` and textconv configuration, duplicate served name introduced by a change, template failures, protected validator paths, `validate` failure and timeout, validator edits not affecting validation, dirty or ignored worktree files blocking submit, no hook running for any daemon Git command under a global `core.hooksPath`, empty-change rejection, submit on a submitted change returning the recorded result, TTL sweep, terminal record deletion, reconciliation after a crash between commit and record write, during a rebase, after a rebase before the record write (`rebase_onto` applied), after an upstream-applied rebase, between `git add` and the record write (`touched_bundles` recovered), a mutation after a `submit_timeout` expiry during rebase, a crash between file write and `git add` (worktree restored from the index), a failed `git add` undoing the write, a failed `worktree add` discarding the change, reconciliation with a touched bundle that has no index entries, a force-pushed upstream whose removed commit is not replayed by the rebase, executable bits preserved by edits, a push timeout after the remote accepted the ref, an offline startup with `push_started` set, a changed `url` applied to `origin`, stale `index.lock` files removed at startup, authoring that repairs a bundle refused in `base_revision`, a symlinked bundle directly under a root reported as a diagnostic, a symlinked path source root resolved once, adding a symlink to a path source changing its revision, a negative or non-integer `offset` rejected by schema validation, maintenance not detaching, a grandchild ignoring SIGTERM killed by the group SIGKILL, a glob character in an agent-supplied path treated literally by `add`, `restore`, and `check-ignore`, a watcher event during startup not rebuilding views before servers exist, a discard succeeding when other repairs fail, a non-ASCII bundle file name in `touched_bundles` recovery, shutdown cancelling a pipeline before its next Git command, a locked `initializing` worktree treated as missing, a push accepted remotely before a crash detected through `push_started`, verification rejecting deletions, served-name changes through `author` edits, and changes to a protected `ignore_file`, verification catalogs never entering the per-revision cache, quarantine directories surviving startup, and after a push before the record write (published detection), quarantine of an unparsable record, orphaned change directories and branches removed at startup, startup recovery of a change with a missing worktree, `skill_change_open` on a source with no snapshot, `worktree remove` on a dirty worktree, concurrent submits on one source.
 - **publish:** against a `file://` bare remote: fast-forward push and synchronous refresh before submit returns; non-fast-forward rejection from a concurrent push, rebase, re-verification, and second push; rebase conflict reporting paths and leaving the change open; non-conflict rebase failure aborting the rebase; verification failure after rebase; third rejection failing; crash after push detected as already published on retry; rebase dropping a change that already exists upstream; `=` push result treated as success; non-rejection push failure; Git timeout; client cancellation and request timeout not interrupting the pipeline, with a later submit returning its outcome; progress notifications during a long `validate`; `submit_timeout` expiry; post-push Refresh failure reported in `refresh_error`; Refresh failure in 5.2 failing the submit without a rebase; a `validate` grandchild process killed with its process group on timeout; a refused bundle in the first source shadowing a later source by its precedence key; Refresh returning extraction errors into `refresh_error`; shutdown with a submit in flight; no force push in any path.
-- **CLI:** `list` exit status and stderr diagnostics, `validate --source` template rules, `token` racing `serve` on first creation, malformed and over-permissive token files rejected.
+- **CLI:** `catalog list` exit status and stderr diagnostics, `bundle validate --source` template rules, `token show` racing `server run` on first creation, home-directory folding in printed paths, help alerts and `SKILL.md` coverage of the live command tree, malformed and over-permissive token files rejected.
 - **Coverage:** at least 90% line coverage per package, enforced by `just coverage`.
 - **pi-skill-library:** in its repository: command registration from a test MCP server, `input` handler resolving daemon names, local-name precedence, `prompts/get` with and without `args`, re-registration on `list_changed` over a single client, server error reporting, `terminateSession()` on shutdown and on client replacement.
 

@@ -187,7 +187,7 @@ func TestDiagnostics(t *testing.T) {
 	line := 12
 	ds := []catalog.Diagnostic{{Source: "reg", Bundle: "skills/user/disk-cleanup", File: "SKILL.md", Line: &line, Message: `unsupported template tag "<%= x %>"`}}
 	out := Diagnostics(ds)
-	want := `<catalog_diagnostics count="1">` + "\ndisk-cleanup reg:skills/user/disk-cleanup/SKILL.md:12 unsupported template tag \"<%= x %>\"\nThese skills are not loaded. Tell the user; `skills-mcp list` shows details.\n</catalog_diagnostics>\n"
+	want := `<catalog_diagnostics count="1">` + "\ndisk-cleanup reg:skills/user/disk-cleanup/SKILL.md:12 unsupported template tag \"<%= x %>\"\nThese skills are not loaded. Tell the user; `skills-mcp catalog list` shows details.\n</catalog_diagnostics>\n"
 	if out != want {
 		t.Fatalf("Diagnostics =\n%s", out)
 	}
