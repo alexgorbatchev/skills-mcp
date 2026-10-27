@@ -1,6 +1,7 @@
 package proc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -91,7 +92,7 @@ func TestRunKillsProcessGroup(t *testing.T) {
 	pid := strings.TrimSpace(string(data))
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat("/proc/" + pid); err != nil {
+		if !alive(pid) {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -124,7 +125,7 @@ func TestRunKillsDetachedGrandchild(t *testing.T) {
 	pid := strings.TrimSpace(string(data))
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat("/proc/" + pid); err != nil {
+		if !alive(pid) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -146,4 +147,15 @@ func TestRunNewSession(t *testing.T) {
 	if fields[2] != pid || fields[3] != pid || fields[4] != "0" {
 		t.Fatalf("pid %s: pgrp=%s session=%s tty_nr=%s", pid, fields[2], fields[3], fields[4])
 	}
+}
+
+// alive reports whether pid is a live process. A zombie counts as dead: in
+// a container whose init never reaps, killed processes stay zombies.
+func alive(pid string) bool {
+	stat, err := os.ReadFile("/proc/" + pid + "/stat")
+	if err != nil {
+		return false
+	}
+	fields := strings.Fields(string(stat[bytes.LastIndexByte(stat, ')')+1:]))
+	return len(fields) > 0 && fields[0] != "Z"
 }

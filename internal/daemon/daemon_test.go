@@ -201,6 +201,14 @@ func TestRunConfigErrors(t *testing.T) {
 	}
 }
 
+func TestRunWithoutGit(t *testing.T) {
+	opts, _ := setup(t, false)
+	t.Setenv("PATH", t.TempDir())
+	if err := Run(context.Background(), opts); err == nil || !strings.Contains(err.Error(), "listing git's repository variables") {
+		t.Fatalf("Run without git = %v", err)
+	}
+}
+
 func TestBackgroundLoopsAndOfflineRestart(t *testing.T) {
 	old := sweepInterval
 	sweepInterval = 50 * time.Millisecond

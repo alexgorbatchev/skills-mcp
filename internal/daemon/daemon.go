@@ -71,7 +71,10 @@ func Run(ctx context.Context, opts Options) error {
 	kill, killNow := context.WithCancel(context.WithoutCancel(ctx))
 	defer killNow()
 
-	g := gitx.New()
+	g, err := gitx.New(kill)
+	if err != nil {
+		return err
+	}
 	var svc *authoring.Service
 	var servers *mcpserver.Servers
 	src := source.NewManager(source.Options{

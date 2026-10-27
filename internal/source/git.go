@@ -44,8 +44,11 @@ func (r *Repo) Exists() bool {
 	return err == nil
 }
 
-// Clone clones into a temporary directory and renames it into place, so an
-// interrupted clone never leaves a partial repo.git behind.
+// Clone creates the bare clone in a temporary directory and renames it into
+// place, so an interrupted clone never leaves a partial repo.git behind. It
+// initializes an empty repository and fetches into it rather than running
+// `git clone`, so every command runs inside the repository and sees the
+// configuration (including conditional includes) that applies there.
 func (r *Repo) Clone(ctx context.Context) error {
 	parent := filepath.Dir(r.Dir)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
@@ -55,26 +58,39 @@ func (r *Repo) Clone(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("creating clone directory: %w", err)
 	}
-	if _, err := r.Git.Run(ctx, parent, gitx.Opts{}, "-c", "transfer.fsckObjects=true", "clone", "--bare", "--quiet", "--origin", "origin", "--branch", r.Branch, r.URL, tmp); err != nil {
+	staged := &Repo{Git: r.Git, Dir: tmp, URL: r.URL, Branch: r.Branch}
+	err = staged.init(ctx)
+	if err == nil {
+		err = staged.Fetch(ctx)
+	}
+	if err == nil {
+		err = os.Rename(tmp, r.Dir)
+	}
+	if err != nil {
 		_ = os.RemoveAll(tmp) // best-effort cleanup; the clone error is returned
 		return fmt.Errorf("cloning %s: %w", r.URL, err)
 	}
-	if err := os.Rename(tmp, r.Dir); err != nil {
-		_ = os.RemoveAll(tmp) // best-effort cleanup; the rename error is returned
-		return fmt.Errorf("renaming clone into place: %w", err)
+	return nil
+}
+
+// init creates an empty bare repository without the user's templates.
+func (r *Repo) init(ctx context.Context) error {
+	if _, err := r.Git.Run(ctx, filepath.Dir(r.Dir), gitx.Opts{}, "init", "--quiet", "--bare", "--template=", "--initial-branch="+r.Branch, r.Dir); err != nil {
+		return fmt.Errorf("initializing: %w", err)
 	}
 	return nil
 }
 
 // Fetch updates the tracked branch ref, first pointing origin at the
-// configured URL when it changed.
+// configured URL when it changed. The stored URL is compared, not the
+// url.<base>.insteadOf rewrite that `git remote get-url` reports.
 func (r *Repo) Fetch(ctx context.Context) error {
-	current, err := r.Output(ctx, "remote", "get-url", "origin")
-	if err != nil {
+	current, err := r.Output(ctx, "config", "--get", "remote.origin.url")
+	if err != nil && gitx.ExitCode(err) != 1 { // 1: not set yet
 		return fmt.Errorf("reading origin URL: %w", err)
 	}
 	if current != r.URL {
-		if _, err := r.Run(ctx, gitx.Opts{}, "remote", "set-url", "origin", r.URL); err != nil {
+		if _, err := r.Run(ctx, gitx.Opts{}, "config", "remote.origin.url", r.URL); err != nil {
 			return fmt.Errorf("updating origin URL: %w", err)
 		}
 	}

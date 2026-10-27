@@ -102,7 +102,10 @@ func newFixture(t *testing.T, withAuthoring bool, budget int) *fixture {
 		Sources:   []*config.Source{src},
 	}
 	dirs := paths.Dirs{Config: filepath.Join(root, "config"), Cache: filepath.Join(root, "cache"), State: filepath.Join(root, "state")}
-	g := gitx.New()
+	g, err := gitx.New(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	f := &fixture{t: t, work: work, cfg: cfg}
 	var svc *authoring.Service
 	f.src = source.NewManager(source.Options{

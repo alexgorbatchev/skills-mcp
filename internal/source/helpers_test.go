@@ -133,10 +133,14 @@ func newHarness(t *testing.T, sources ...*config.Source) *harness {
 }
 
 func (h *harness) newManager() *Manager {
+	g, err := gitx.New(context.Background())
+	if err != nil {
+		h.t.Fatal(err)
+	}
 	return NewManager(Options{
 		Config: h.cfg,
 		Dirs:   h.dirs,
-		Git:    gitx.New(),
+		Git:    g,
 		Getenv: func(k string) (string, bool) {
 			v, ok := h.env[k]
 			return v, ok

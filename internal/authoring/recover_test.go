@@ -181,6 +181,37 @@ func TestReconcileInterruptedRebase(t *testing.T) {
 	}
 }
 
+// An unreadable HEAD fails reconciliation instead of clearing an
+// interrupted rebase as if it had not happened.
+func TestReconcileUnreadableHead(t *testing.T) {
+	e := newEnv(t)
+	id := e.open()
+	wt := e.worktree(id)
+	editGolang(t, e, id, "body", "agent body")
+	c, _ := e.svc.store.get(id)
+	if err := c.acquire(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.svc.commit(context.Background(), c.rec, "agent change"); err != nil {
+		t.Fatal(err)
+	}
+	base := c.rec.BaseRevision
+	c.rec.RebaseOnto = strPtr(base)
+	if err := e.svc.store.persist(c.rec); err != nil {
+		t.Fatal(err)
+	}
+	gitDir := run(t, wt, "rev-parse", "--absolute-git-dir")
+	write(t, filepath.Join(gitDir, "HEAD"), "0000000000000000000000000000000000000000\n")
+	c.release()
+
+	e.start()
+	e.svc.Recover(context.Background())
+	rec := e.record(id)
+	if rec.RebaseOnto == nil || rec.BaseRevision != base {
+		t.Fatalf("record = %+v", rec)
+	}
+}
+
 func TestReconcileAbortsRebaseInProgress(t *testing.T) {
 	e := newEnv(t)
 	id := e.open()

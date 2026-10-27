@@ -1,6 +1,6 @@
 ---
 created_on: 2026-10-26 10:13
-last_modified: 2026-10-26 20:42
+last_modified: 2026-10-26 21:07
 status: current
 ---
 
@@ -125,7 +125,11 @@ Verified with git 2.56:
 
 - Hooks defined in configuration (`hook.<name>.command` with `hook.<name>.event`, Git 2.54 and later) run even with `-c core.hooksPath=/dev/null`. `hook.<name>.enabled=false` disables one; `-c` splits at the first `=`, so it cannot name a hook whose name contains `=`, while `--config-env=<key>=<variable>` splits at the last `=` and can.
 - With `safe.bareRepository=explicit`, `git -C repo.git <command>` fails with exit 128; `--git-dir` names the repository explicitly and works.
-- `clone.defaultRemoteName` renames the remote of `git clone --bare`; `--origin origin` overrides it.
+- `clone.defaultRemoteName` renames the remote of `git clone --bare`.
+- `git clone` reads configuration from the directory it runs in, where `includeIf "gitdir:..."` and `includeIf "hasconfig:remote.*.url:..."` do not match, while the clone's own ref updates run `reference-transaction` hooks under the configuration of the new repository, where they do. `hook.<event>.enabled=false` (Git 2.55 and later) disables every configured hook for the event, including in child git processes.
+- Git's credential prompt runs `GIT_ASKPASS`, else `core.askPass`, else `SSH_ASKPASS`; an empty `GIT_ASKPASS` stops it from falling back to the other two. `GIT_TERMINAL_PROMPT=0` and the lack of a controlling terminal do not.
+- `core.fsmonitor=<program>` runs that program from `status`, `add`, and `commit`, regardless of `core.hooksPath`.
+- `git remote get-url` reports the URL after `url.<base>.insteadOf` rewriting; `git config --get remote.origin.url` reports the stored value.
 - A rebase whose change already exists upstream drops the commit and exits 0 with `HEAD` at the upstream tip.
 - `-c gc.auto=0` or `-c maintenance.auto=false` makes `git maintenance run --auto` skip garbage collection.
 - Fetching `+refs/heads/<branch>:refs/heads/<branch>` into a bare repository with worktrees, and rebasing inside such a worktree, both work.
@@ -157,7 +161,7 @@ A go-sdk v1.8.0 stdio server with 50 registered tools uses 12.5 MB RSS after `to
 
 ```
 GitHub repo (storage of record)
-   │  git clone --bare --origin origin; git fetch origin +refs/heads/<branch>:refs/heads/<branch>
+   │  git init --bare; git config remote.origin.url <url>; git fetch origin +refs/heads/<branch>:refs/heads/<branch>
    ▼
 $XDG_STATE_HOME/skills-mcp/sources/<source>/repo.git
    │  git ls-tree + cat-file → temp dir → render templates → chmod → rename to rev/<sha>
@@ -506,8 +510,8 @@ Scaffold with `go-scaffold`; module path `github.com/alexgorbatchev/skills-mcp`.
 | `internal/proc/proc.go` | Child processes in their own session and process group, without a controlling terminal, with timeouts, group SIGTERM then SIGKILL, `WaitDelay`, and `Pdeathsig` on Linux. |
 | `internal/config/config.go` | Parse `config.yaml`, apply defaults, validate fields. |
 | `internal/paths/paths.go` | XDG config, cache, and state directories for the app. |
-| `internal/gitx/git.go` | `git` exec wrapper over `internal/proc`: fixed environment and `-c` options, disabling of hooks defined in configuration, `--git-dir` for bare repositories, per-command timeouts, stderr capture, `git push --porcelain` result parsing. Source mutexes live in `internal/source/manager.go`. |
-| `internal/source/git.go` | Bare clone (`--origin origin`), git commands on the bare clone, refspec fetch, tree materialization from `git ls-tree -r -z` and `git cat-file --batch`. |
+| `internal/gitx/git.go` | `git` exec wrapper over `internal/proc`: fixed environment without repository-location variables and `-c` options, disabling of hooks defined in configuration and of fsmonitor, `--git-dir` for bare repositories, discovery ceilings, per-command timeouts, stderr capture, `git push --porcelain` result parsing. Source mutexes live in `internal/source/manager.go`. |
+| `internal/source/git.go` | Bare clone (`init --bare` and fetch), git commands on the bare clone, refspec fetch that compares the stored origin URL, tree materialization from `git ls-tree -r -z` and `git cat-file --batch`. |
 | `internal/source/path.go` | `path` sources: recursive fsnotify watch with a 500 ms debounce, path source revision, materialization by copy. |
 | `internal/source/prepare.go` | `prepare` rule execution in extraction and verification trees: matching directories, argv execution through the shared process wrapper, link and inode checks, `prepare_failed` diagnostics. |
 | `internal/catalog/ignore.go` | `ignore_file` evaluation: gitignore patterns from ignore files at or below the bundle directory, the `./` prefix rule, `node_modules`, and the ignore files themselves. |
@@ -570,9 +574,9 @@ interface PiSkillsLibrarySettings {
 
 ### Git execution
 
-- Every `git` invocation runs with `GIT_TERMINAL_PROMPT=0`, `SSH_ASKPASS_REQUIRE=never`, and `-c core.hooksPath=/dev/null`, in a new session without a controlling terminal, so neither ssh nor a credential helper can prompt; the user's ssh configuration, including `GIT_SSH_COMMAND` and `core.sshCommand`, applies unchanged. Before each invocation, `git config -z --name-only --get-regexp '^hook\..+\.(command|event)$'` runs in the same repository context, and every hook name it lists is disabled with `--config-env=hook.<name>.enabled=SKILLS_MCP_HOOK_ENABLED` (the variable holds `false`); a listing failure other than exit 1 (no hook keys) fails the command. Commands on the bare clone run as `git -C repo.git --git-dir=.`, so `safe.bareRepository=explicit` does not refuse them; commands in a change worktree run as `git -C <worktree>`. Every invocation except the hourly maintenance command also passes `-c gc.auto=0 -c maintenance.auto=false`. The maintenance command runs as `git -c gc.autoDetach=false -c maintenance.autoDetach=false maintenance run --auto` with a 600-second timeout, so it stays in its process group under the source mutex; a killed run leaves only temporary packs. Every invocation except `git check-ignore` sets `GIT_LITERAL_PATHSPECS=1`, so agent-supplied paths are never globs. `git check-ignore` rejects literal pathspec magic (exit 128 in git 2.43) and already matches its inputs as literal pathnames; it runs as `git check-ignore --stdin -z` with the path on stdin.
+- `gitx.New` removes the variables `git rev-parse --local-env-vars` lists (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, and the rest of Git's repository-location variables) from the daemon's environment, so every command acts on the repository it names. Every `git` invocation runs with `GIT_TERMINAL_PROMPT=0`, an empty `GIT_ASKPASS` (Git then falls back to neither `core.askPass` nor `SSH_ASKPASS`), `SSH_ASKPASS_REQUIRE=never`, and `GCM_INTERACTIVE=never`, in a new session without a controlling terminal, so neither Git, ssh, nor a credential helper can prompt; the user's ssh configuration, including `GIT_SSH_COMMAND` and `core.sshCommand`, applies unchanged. Every invocation passes `-c core.hooksPath=/dev/null -c core.fsmonitor=false` and `-c hook.<event>.enabled=false` for every githooks(5) event, which on Git 2.55 and later disables configured hooks in the command and in every git process it starts. Before each invocation, `git config -z --name-only --get-regexp '^hook\..+\.(command|event)$'` runs in the same repository context, and every hook name it lists is also disabled with `--config-env=hook.<name>.enabled=SKILLS_MCP_HOOK_ENABLED` (the variable holds `false`); this covers Git 2.54, which has no event-wide switch, and hooks named after an event, whose `hook.<event>.enabled` key Git reads as the hook's own switch. A listing failure other than exit 1 (no hook keys) fails the command. Commands on the bare clone run as `git -C repo.git --git-dir=.`, so `safe.bareRepository=explicit` does not refuse them; other commands run as `git -C <dir>` with `GIT_CEILING_DIRECTORIES` set to the parent of `<dir>`, so a missing worktree `.git` never leads discovery into an enclosing repository. The bare clone is created with `git init --bare --template= --initial-branch=<branch>` followed by the regular fetch inside it, never `git clone`, so every command, including the hook listing, runs with the configuration of the repository it changes. Every invocation except the hourly maintenance command also passes `-c gc.auto=0 -c maintenance.auto=false`. The maintenance command runs as `git -c gc.autoDetach=false -c maintenance.autoDetach=false maintenance run --auto` with a 600-second timeout, so it stays in its process group under the source mutex; a killed run leaves only temporary packs. Every invocation except `git check-ignore` sets `GIT_LITERAL_PATHSPECS=1`, so agent-supplied paths are never globs. `git check-ignore` rejects literal pathspec magic (exit 128 in git 2.43) and already matches its inputs as literal pathnames; it runs as `git check-ignore --stdin -z` with the path on stdin.
 - Commands that produce diffs for scanning use plumbing with `--no-ext-diff --no-textconv --no-color`. Every command whose output lists paths runs with `-z` (or `--porcelain -z`), so no path is quoted.
-- Timeouts: 120 seconds for `clone`, `fetch`, `push`, and `ls-remote`; 60 seconds for every other command; each also bounded by the caller's deadline. Each command runs in its own session and process group (`SysProcAttr.Setsid`); a timeout sends SIGTERM to the whole group from `cmd.Cancel`, and after a 5-second grace period the wrapper's own timer sends `syscall.Kill(-pgid, SIGKILL)` to the group; `cmd.WaitDelay` is 6 seconds, and the operation fails with the command name and the timeout. The `validate` command runs the same way.
+- Timeouts: 120 seconds for `fetch`, `push`, and `ls-remote`; 60 seconds for every other command; each also bounded by the caller's deadline. Each command runs in its own session and process group (`SysProcAttr.Setsid`); a timeout sends SIGTERM to the whole group from `cmd.Cancel`, and after a 5-second grace period the wrapper's own timer sends `syscall.Kill(-pgid, SIGKILL)` to the group; `cmd.WaitDelay` is 6 seconds, and the operation fails with the command name and the timeout. The `validate` command runs the same way.
 - Commits made by the daemon also pass `--no-verify`. Commit signing follows the user's Git configuration.
 - Git commands run on daemon-owned contexts: the submit pipeline's detached context, the refresh loop's context, the startup context, or, for every other authoring tool, a 120-second deadline derived from the daemon's kill context and held under the change mutex. They never run on an MCP request context. Cleanup after a failed or expired step (`git rebase --abort`, `git reset --soft`) runs on a fresh `context.WithoutCancel` with a 60-second deadline.
 
@@ -1545,3 +1549,14 @@ Outcome: Q11A2 restated as a generic, configuration-driven `prepare` step (like 
 | Remote name | The bare clone passes `--origin origin`, so a global `clone.defaultRemoteName` no longer breaks fetch and push. | Specified in sections 3, 8; tested |
 | `safe.bareRepository=explicit` | Commands on the bare clone pass `--git-dir=.`. | Specified in section 8; tested |
 | ssh prompts | The daemon no longer probes `core.sshCommand` from its own working directory or overrides `GIT_SSH_COMMAND`; every child runs in a new session without a controlling terminal, so ssh cannot prompt under any ssh configuration. | Specified in section 8; tested |
+
+### A.24 Implementation review 8: findings applied
+
+| Topic | Revision | Status |
+|---|---|---|
+| Hooks in conditional includes | `git clone` read configuration outside the new repository, so hooks added by `includeIf` conditions that match only inside it ran. The bare clone is now `git init --bare` plus a fetch inside it, and every invocation also passes `hook.<event>.enabled=false` for every githooks(5) event, which covers child git processes and hooks defined after the listing on Git 2.55 and later. On Git 2.54, a hook enabled only by a condition that matches inside a child process's repository and not the parent's still runs. | Specified in section 8; tested against git 2.56 |
+| askpass | An empty `GIT_ASKPASS` stops Git from running `core.askPass` or `SSH_ASKPASS` for credentials; `GCM_INTERACTIVE=never` stops Git Credential Manager's interface. | Specified in section 8; tested |
+| fsmonitor | Every invocation passes `core.fsmonitor=false`. | Specified in section 8; tested |
+| `insteadOf` | Fetch compares the stored `remote.origin.url`, not the rewritten URL, so refreshes no longer rewrite the clone's configuration. | Specified in section 8; tested |
+| Reconciliation | Failing to read the worktree `HEAD` (or, other than for a root commit, its parent) fails reconciliation instead of treating the commit as absent. | Implemented and tested |
+| Repository location | The daemon's inherited Git repository-location variables are removed, and worktree commands cannot discover an enclosing repository. | Specified in section 8; tested |

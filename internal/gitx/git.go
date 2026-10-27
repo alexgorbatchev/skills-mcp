@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -25,26 +26,61 @@ const (
 	MaintenanceTimeout = 600 * time.Second
 )
 
-var networkCommands = map[string]bool{"clone": true, "fetch": true, "push": true, "ls-remote": true}
+var networkCommands = map[string]bool{"fetch": true, "push": true, "ls-remote": true}
 
 // hookSwitchEnv holds "false"; --config-env reads it to disable each hook
 // defined in configuration.
 const hookSwitchEnv = "SKILLS_MCP_HOOK_ENABLED"
+
+// hookEvents are the githooks(5) events. hook.<event>.enabled=false
+// (Git 2.55 and later) disables every configured hook for the event,
+// including hooks that only a child git process's configuration defines.
+var hookEvents = []string{
+	"applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit",
+	"prepare-commit-msg", "commit-msg", "post-commit", "pre-rebase", "post-checkout", "post-merge",
+	"pre-push", "pre-receive", "update", "proc-receive", "post-receive", "post-update",
+	"reference-transaction", "receive-report", "push-to-checkout", "pre-auto-gc", "post-rewrite",
+	"sendemail-validate", "fsmonitor-watchman", "p4-changelist", "p4-prepare-changelist",
+	"p4-post-changelist", "p4-pre-submit", "post-index-change",
+}
+
+// fixedConfig applies to every invocation: no hooks, and no fsmonitor,
+// which core.hooksPath does not cover.
+var fixedConfig = func() []string {
+	args := []string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"}
+	for _, e := range hookEvents {
+		args = append(args, "-c", "hook."+e+".enabled=false")
+	}
+	return args
+}()
 
 // Git runs git commands. The zero value is not usable; call New.
 type Git struct {
 	env []string
 }
 
-// New prepares the git environment. Children run without a controlling
-// terminal (see proc), so ssh and credential helpers cannot prompt
-// whatever the user's ssh configuration says.
-func New() *Git {
-	return &Git{env: append(os.Environ(),
+// New prepares the git environment. Git's repository-location variables
+// (from `git rev-parse --local-env-vars`) are removed, so every command acts
+// on the repository it names. Children run without a controlling terminal
+// (see proc), and an empty GIT_ASKPASS stops git from falling back to
+// core.askPass or SSH_ASKPASS, so nothing can prompt.
+func New(ctx context.Context) (*Git, error) {
+	res, err := proc.Run(ctx, proc.Command{Name: "git", Args: []string{"rev-parse", "--local-env-vars"}, Timeout: LocalTimeout})
+	if err != nil {
+		return nil, fmt.Errorf("listing git's repository variables: %w", err)
+	}
+	local := strings.Fields(string(res.Stdout))
+	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
+		name, _, _ := strings.Cut(kv, "=")
+		return slices.Contains(local, name)
+	})
+	return &Git{env: append(env,
 		"GIT_TERMINAL_PROMPT=0",
+		"GIT_ASKPASS=",
 		"SSH_ASKPASS_REQUIRE=never",
+		"GCM_INTERACTIVE=never",
 		hookSwitchEnv+"=false",
-	)}
+	)}, nil
 }
 
 // Opts adjusts one invocation.
@@ -58,18 +94,27 @@ type Opts struct {
 
 // Run executes `git -C dir <args>` and returns stdout. On a non-zero exit
 // the captured stdout is still returned with the error, so callers can parse
-// porcelain output of a rejected push.
+// porcelain output of a rejected push. Without Bare, dir is the top level of
+// a working tree (or not a repository); repository discovery never leaves
+// it for an enclosing repository.
 func (g *Git) Run(ctx context.Context, dir string, opts Opts, args ...string) ([]byte, error) {
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	env := slices.Clone(g.env)
 	repo := []string{"-C", dir}
 	if opts.Bare {
 		repo = append(repo, "--git-dir=.")
+	} else {
+		env = append(env, "GIT_CEILING_DIRECTORIES="+filepath.Dir(dir))
 	}
-	hooks, err := g.configuredHooks(ctx, repo)
+	hooks, err := configuredHooks(ctx, repo, env)
 	if err != nil {
 		return nil, err
 	}
 	sub := subcommand(args)
-	full := append(append(slices.Clone(repo), "-c", "core.hooksPath=/dev/null"), hooks...)
+	full := slices.Concat(repo, fixedConfig, hooks)
 	timeout := LocalTimeout
 	switch {
 	case sub == "maintenance":
@@ -81,11 +126,10 @@ func (g *Git) Run(ctx context.Context, dir string, opts Opts, args ...string) ([
 			timeout = NetworkTimeout
 		}
 	}
-	env := g.env
 	// check-ignore rejects literal pathspec magic and already matches its
 	// input as literal paths.
 	if sub != "check-ignore" {
-		env = append(slices.Clone(env), "GIT_LITERAL_PATHSPECS=1")
+		env = append(env, "GIT_LITERAL_PATHSPECS=1")
 	}
 	res, err := proc.Run(ctx, proc.Command{
 		Name:    "git",
@@ -98,15 +142,16 @@ func (g *Git) Run(ctx context.Context, dir string, opts Opts, args ...string) ([
 	return res.Stdout, err
 }
 
-// configuredHooks returns options that disable every hook defined in
-// configuration (hook.<name>.command, Git 2.54 and later), which
-// core.hooksPath does not cover. The listing runs in the same repository
-// context as the command, so local and conditionally included
+// configuredHooks returns options that disable, by name, every hook the
+// command's own configuration defines (hook.<name>.command). Git 2.54 has
+// no event-wide switch, and on later versions a hook named after an event
+// turns that event's switch into a per-hook one. The listing runs in the
+// command's repository context, so local and conditionally included
 // configuration count. --config-env splits at the last "=", so hook names
 // containing "=" are disabled too.
-func (g *Git) configuredHooks(ctx context.Context, repo []string) ([]string, error) {
+func configuredHooks(ctx context.Context, repo, env []string) ([]string, error) {
 	args := append(slices.Clone(repo), "config", "-z", "--name-only", "--get-regexp", `^hook\..+\.(command|event)$`)
-	res, err := proc.Run(ctx, proc.Command{Name: "git", Args: args, Env: g.env, Timeout: LocalTimeout})
+	res, err := proc.Run(ctx, proc.Command{Name: "git", Args: args, Env: env, Timeout: LocalTimeout})
 	if ExitCode(err) == 1 { // no hook keys
 		return nil, nil
 	}

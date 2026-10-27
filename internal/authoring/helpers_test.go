@@ -160,6 +160,10 @@ func newEnv(t *testing.T, mutate ...func(*config.Source)) *env {
 		m(src)
 	}
 	root := t.TempDir()
+	g, err := gitx.New(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	e := &env{
 		t: t, remote: r,
 		cfg: &config.Config{
@@ -167,7 +171,7 @@ func newEnv(t *testing.T, mutate ...func(*config.Source)) *env {
 			ChangeTTL: 24 * time.Hour, DefaultWriteSource: "reg", Sources: []*config.Source{src},
 		},
 		dirs:  paths.Dirs{Config: filepath.Join(root, "config"), Cache: filepath.Join(root, "cache"), State: filepath.Join(root, "state")},
-		git:   gitx.New(),
+		git:   g,
 		clock: &clock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
 	}
 	e.start()

@@ -27,7 +27,7 @@ Go daemon and CLI that serves agent skills from Git repositories as MCP tools an
 
 ## Conventions
 
-- Run `git` only through `internal/gitx`: it disables prompts, hooks from `core.hooksPath` and from `hook.<name>` configuration, sets literal pathspecs (except `check-ignore`), and applies timeouts. Run git on the bare clone through `source.Repo.Run` or `Repo.Output`, which pass `--git-dir`. Run every other child process through `internal/proc`, which starts it in a new session without a controlling terminal and kills the whole process group.
+- Run `git` only through `internal/gitx`: it removes Git's repository-location variables, disables prompts (including askpass programs), hooks from `core.hooksPath`, `hook.<name>` configuration, and `core.fsmonitor`, stops repository discovery at the named directory, sets literal pathspecs (except `check-ignore`), and applies timeouts. Run git on the bare clone through `source.Repo.Run` or `Repo.Output`, which pass `--git-dir`. Run every other child process through `internal/proc`, which starts it in a new session without a controlling terminal and kills the whole process group.
 - Parse git output only from plumbing or `-z` forms; never parse porcelain diff output for content checks.
 - Snapshots are read-only after extraction; remove them with `removeTree`, which restores write permission first.
 - Tests use real git repositories over `file://` URLs and isolate git with `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM`; snapshot fixtures must be unlocked in `t.Cleanup` before `t.TempDir` removal.

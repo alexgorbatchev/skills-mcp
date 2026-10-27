@@ -3,6 +3,8 @@ package gitx
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +12,15 @@ import (
 	"strings"
 	"testing"
 )
+
+func newGit(t *testing.T) *Git {
+	t.Helper()
+	g, err := New(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g
+}
 
 func newRepo(t *testing.T, g *Git) string {
 	t.Helper()
@@ -30,7 +41,7 @@ func newRepo(t *testing.T, g *Git) string {
 
 func TestRunEnvironment(t *testing.T) {
 	ctx := context.Background()
-	g := New()
+	g := newGit(t)
 	dir := newRepo(t, g)
 
 	// Hooks never run, even with a configured hooks path.
@@ -101,7 +112,7 @@ func isolateConfig(t *testing.T) string {
 func TestRunDisablesConfiguredHooks(t *testing.T) {
 	isolateConfig(t)
 	ctx := context.Background()
-	g := New()
+	g := newGit(t)
 	dir := newRepo(t, g)
 	marker := filepath.Join(dir, "hook-ran")
 	for _, kv := range [][2]string{
@@ -114,7 +125,7 @@ func TestRunDisablesConfiguredHooks(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := g.configuredHooks(ctx, []string{"-C", dir})
+	got, err := configuredHooks(ctx, []string{"-C", dir}, g.env)
 	want := []string{"--config-env=hook.mark.enabled=" + hookSwitchEnv, "--config-env=hook.a=b.enabled=" + hookSwitchEnv}
 	if err != nil || !slices.Equal(got, want) {
 		t.Fatalf("configuredHooks = %q, %v; want %q", got, err, want)
@@ -155,7 +166,7 @@ func supportsConfigHooks(t *testing.T) bool {
 
 func TestRunConfiguredHooksListingFails(t *testing.T) {
 	isolateConfig(t)
-	_, err := New().Run(context.Background(), filepath.Join(t.TempDir(), "missing"), Opts{}, "status")
+	_, err := newGit(t).Run(context.Background(), filepath.Join(t.TempDir(), "missing"), Opts{}, "status")
 	if err == nil || !strings.Contains(err.Error(), "listing configured git hooks") {
 		t.Fatalf("error = %v", err)
 	}
@@ -166,7 +177,7 @@ func TestRunConfiguredHooksListingFails(t *testing.T) {
 func TestRunBareRepository(t *testing.T) {
 	home := isolateConfig(t)
 	ctx := context.Background()
-	g := New()
+	g := newGit(t)
 	src := newRepo(t, g)
 	bare := filepath.Join(t.TempDir(), "repo.git")
 	if _, err := g.Run(ctx, src, Opts{}, "clone", "-q", "--bare", src, bare); err != nil {
@@ -196,7 +207,7 @@ func TestSubcommand(t *testing.T) {
 }
 
 func TestExitCode(t *testing.T) {
-	g := New()
+	g := newGit(t)
 	_, err := g.Run(context.Background(), t.TempDir(), Opts{}, "rev-parse", "HEAD")
 	if ExitCode(err) <= 0 {
 		t.Fatalf("ExitCode = %d for %v", ExitCode(err), err)
@@ -237,5 +248,87 @@ func TestParsePush(t *testing.T) {
 				t.Fatalf("ParsePush = %+v accepted=%v nonFF=%v", r, r.Accepted(), r.NonFastForward())
 			}
 		})
+	}
+}
+
+func TestNewWithoutGit(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	if _, err := New(context.Background()); err == nil || !strings.Contains(err.Error(), "listing git's repository variables") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+// Credentials are never requested through an askpass program, whichever
+// variable names one.
+func TestRunNeverAsksForCredentials(t *testing.T) {
+	isolateConfig(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Basic realm="x"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	marker := filepath.Join(t.TempDir(), "asked")
+	askpass := filepath.Join(t.TempDir(), "askpass")
+	if err := os.WriteFile(askpass, []byte("#!/bin/sh\ntouch "+marker+"\necho secret\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSH_ASKPASS", askpass)
+	t.Setenv("GIT_ASKPASS", askpass)
+	if _, err := newGit(t).Run(context.Background(), t.TempDir(), Opts{}, "ls-remote", srv.URL+"/repo.git"); err == nil {
+		t.Fatal("ls-remote succeeded against a 401 server")
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("askpass program ran")
+	}
+}
+
+// Inherited repository-location variables never redirect a command, and
+// discovery never climbs from a directory into an enclosing repository.
+func TestRunRepositoryLocation(t *testing.T) {
+	isolateConfig(t)
+	ctx := context.Background()
+	t.Setenv("GIT_DIR", filepath.Join(t.TempDir(), "elsewhere"))
+	t.Setenv("GIT_WORK_TREE", t.TempDir())
+	g := newGit(t)
+	outer := newRepo(t, g)
+	top, err := g.Output(ctx, outer, "rev-parse", "--show-toplevel")
+	if want, _ := filepath.EvalSymlinks(outer); err != nil || top != want {
+		t.Fatalf("toplevel = %q, %v; want %q", top, err, want)
+	}
+	inner := filepath.Join(outer, "inner")
+	if err := os.Mkdir(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(ctx, inner, Opts{}, "rev-parse", "--git-dir"); err == nil {
+		t.Fatal("discovery climbed into the enclosing repository")
+	}
+}
+
+// core.fsmonitor names a hook program that core.hooksPath does not cover.
+func TestRunDisablesFSMonitor(t *testing.T) {
+	isolateConfig(t)
+	ctx := context.Background()
+	g := newGit(t)
+	dir := newRepo(t, g)
+	marker := filepath.Join(t.TempDir(), "fsmonitor-ran")
+	monitor := filepath.Join(t.TempDir(), "monitor")
+	if err := os.WriteFile(monitor, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(ctx, dir, Opts{}, "config", "core.fsmonitor", monitor); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(ctx, dir, Opts{}, "status", "--porcelain"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("fsmonitor ran")
+	}
+	// Control: plain git runs it.
+	if out, err := exec.Command("git", "-C", dir, "status", "--porcelain").CombinedOutput(); err != nil {
+		t.Fatalf("control status: %v: %s", err, out)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("control status did not run the fsmonitor")
 	}
 }

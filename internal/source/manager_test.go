@@ -659,11 +659,7 @@ func TestHostileGlobalGitConfig(t *testing.T) {
 	u := newUpstream(t)
 	u.write("skills/agent/a/SKILL.md", skillDoc("a", "one"))
 	u.commit("one")
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	writeFile(t, filepath.Join(home, ".gitconfig"), "[clone]\n\tdefaultRemoteName = upstream\n[safe]\n\tbareRepository = explicit\n", 0o644)
+	isolateGitConfig(t, "[clone]\n\tdefaultRemoteName = upstream\n[safe]\n\tbareRepository = explicit\n")
 
 	h := newHarness(t, gitSourceConfig(u.url()))
 	h.init()
@@ -676,5 +672,63 @@ func TestHostileGlobalGitConfig(t *testing.T) {
 	}
 	if err := h.m.Maintain(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// isolateGitConfig gives git an empty home whose global configuration the
+// test writes.
+func isolateGitConfig(t *testing.T, global string) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	writeFile(t, filepath.Join(home, ".gitconfig"), global, 0o644)
+	return home
+}
+
+// A hook defined in configuration that only applies inside the clone (here
+// through a conditional include on the remote URL) never runs.
+func TestCloneNeverRunsConditionallyIncludedHooks(t *testing.T) {
+	u := newUpstream(t)
+	u.write("skills/agent/a/SKILL.md", skillDoc("a", "one"))
+	u.commit("one")
+	marker := filepath.Join(t.TempDir(), "hook-ran")
+	home := isolateGitConfig(t, "[includeIf \"hasconfig:remote.*.url:file://**\"]\n\tpath = hooks.inc\n")
+	writeFile(t, filepath.Join(home, "hooks.inc"), "[hook \"audit\"]\n\tcommand = touch "+marker+"\n\tevent = reference-transaction\n", 0o644)
+
+	h := newHarness(t, gitSourceConfig(u.url()))
+	h.init()
+	h.refresh("reg")
+	u.write("skills/agent/a/SKILL.md", skillDoc("a", "two"))
+	u.commit("two")
+	h.refresh("reg")
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("configured hook ran")
+	}
+}
+
+// An insteadOf rewrite of the source URL does not make every refresh
+// rewrite the clone's configuration.
+func TestFetchKeepsRewrittenOriginURL(t *testing.T) {
+	u := newUpstream(t)
+	u.write("skills/agent/a/SKILL.md", skillDoc("a", "one"))
+	u.commit("one")
+	isolateGitConfig(t, "[url \""+u.url()+"\"]\n\tinsteadOf = skills-alias\n")
+	h := newHarness(t, gitSourceConfig("skills-alias"))
+	h.init()
+	h.refresh("reg")
+	cfg := filepath.Join(h.dirs.State, "sources", "reg", "repo.git", "config")
+	before, err := os.Stat(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.refresh("reg")
+	after, err := os.Stat(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("refresh rewrote the clone's configuration")
 	}
 }

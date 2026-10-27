@@ -35,8 +35,14 @@ func (s *Service) reconcile(ctx context.Context, c *change, mode reconcileMode) 
 	if err := s.abortRebase(ctx, rec); err != nil {
 		return err
 	}
-	head, _ := s.gitOutput(ctx, rec, "rev-parse", "HEAD")
-	parent, _ := s.gitOutput(ctx, rec, "rev-parse", "--verify", "--quiet", "HEAD^")
+	head, err := s.gitOutput(ctx, rec, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return fmt.Errorf("reading the worktree HEAD: %w", err)
+	}
+	parent, err := s.gitOutput(ctx, rec, "rev-parse", "--verify", "--quiet", "HEAD^")
+	if err != nil && gitx.ExitCode(err) != 1 { // 1: HEAD is a root commit
+		return fmt.Errorf("reading the worktree HEAD's parent: %w", err)
+	}
 	if rec.RebaseOnto != nil {
 		onto := *rec.RebaseOnto
 		switch onto {
