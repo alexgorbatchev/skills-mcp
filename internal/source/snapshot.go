@@ -432,19 +432,23 @@ func setPermissions(dir string) error {
 // otherwise an existing snapshot wins and the tree is discarded.
 func (t *tree) finalize(revDir string, replace bool) error {
 	final := filepath.Join(revDir, t.record.Revision)
-	if err := writeJSONAtomic(final+".render.json", t.record); err != nil {
-		_ = removeTree(t.dir) // best-effort cleanup; the write error is returned
-		return err
-	}
 	if _, err := os.Lstat(final); err == nil {
 		if !replace {
+			// Another extraction won; its record already describes it.
 			return removeTree(t.dir)
 		}
+		// Move the old tree aside before writing the new record, so a crash
+		// leaves either no tree (re-extracted later) or the new pair.
 		old := t.dir + ".old"
 		if err := os.Rename(final, old); err != nil {
+			_ = removeTree(t.dir) // best-effort cleanup; the rename error is returned
 			return fmt.Errorf("moving old snapshot aside: %w", err)
 		}
 		defer removeTree(old) // the old tree is garbage either way; startup cleanup removes leftovers
+	}
+	if err := writeJSONAtomic(final+".render.json", t.record); err != nil {
+		_ = removeTree(t.dir) // best-effort cleanup; the write error is returned
+		return err
 	}
 	if err := os.Rename(t.dir, final); err != nil {
 		return fmt.Errorf("renaming snapshot into place: %w", err)

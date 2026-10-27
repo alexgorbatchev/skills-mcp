@@ -3,9 +3,11 @@ package source
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -335,5 +337,127 @@ func TestShutdownStopsPrepare(t *testing.T) {
 	err := h.m.Refresh(context.Background(), "reg", RefreshOptions{})
 	if err == nil || !strings.Contains(err.Error(), "interrupted by shutdown") || h.m.Retained("reg", sha) {
 		t.Fatalf("Refresh = %v, retained = %v", err, h.m.Retained("reg", sha))
+	}
+}
+
+func TestCheckTreePath(t *testing.T) {
+	roots := []string{"skills/agent"}
+	for _, p := range []string{"skills/agent/x/SKILL.md", "skills/agent/x/a/b"} {
+		if err := checkTreePath(p, roots); err != nil {
+			t.Errorf("%s rejected: %v", p, err)
+		}
+	}
+	for _, p := range []string{
+		"skills/agent/x/../../../../ESCAPED", "../x", "/abs", "skills/agent//x", "skills/agent/./x",
+		"skills/agent/x/.git/config", "other/x", "skills/agentx/y",
+	} {
+		if err := checkTreePath(p, roots); err == nil {
+			t.Errorf("%s accepted", p)
+		}
+	}
+}
+
+// A tree with ".." entries (rejected by fsck on well-behaved hosts) must
+// never write outside the extraction directory.
+func TestMaliciousTreeCannotEscape(t *testing.T) {
+	u := newUpstream(t)
+	u.write("skills/agent/x/SKILL.md", skillDoc("x", ""))
+	u.commit("base")
+	payload := filepath.Join(t.TempDir(), "payload")
+	writeFile(t, payload, "escaped", 0o644)
+	blobID := u.git("hash-object", "-w", payload)
+	// Build trees bottom-up: ".." -> ".." -> ".." -> ESCAPED.txt.
+	tree := mkTree(t, u, "100644 blob "+blobID, "ESCAPED.txt")
+	for range 6 {
+		tree = mkTree(t, u, "040000 tree "+tree, "..")
+	}
+	x := mkTree(t, u, "040000 tree "+tree, "..")
+	agent := mkTree(t, u, "040000 tree "+x, "x")
+	skills := mkTree(t, u, "040000 tree "+agent, "agent")
+	root := mkTree(t, u, "040000 tree "+skills, "skills")
+	commit := u.git("commit-tree", root, "-p", "HEAD", "-m", "evil")
+	u.git("update-ref", "refs/heads/main", commit)
+
+	h := newHarness(t, gitSourceConfig(u.url()))
+	h.init()
+	err := h.m.Refresh(context.Background(), "reg", RefreshOptions{})
+	if err == nil {
+		t.Fatal("refreshing a malicious tree succeeded")
+	}
+	var found []string
+	_ = filepath.WalkDir(filepath.Dir(h.dirs.Cache), func(p string, d os.DirEntry, err error) error {
+		if err == nil && d.Name() == "ESCAPED.txt" {
+			found = append(found, p)
+		}
+		return nil
+	})
+	if len(found) > 0 {
+		t.Fatalf("escaped files: %v", found)
+	}
+}
+
+func mkTree(t *testing.T, u *upstream, entry, name string) string {
+	t.Helper()
+	// git mktree refuses "..", so write the raw tree object.
+	mode, rest, _ := strings.Cut(entry, " ")
+	_, oid, _ := strings.Cut(rest, " ")
+	raw := []byte(strings.TrimPrefix(mode, "0") + " " + name + "\x00")
+	bin, err := hex.DecodeString(oid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = append(raw, bin...)
+	f := filepath.Join(t.TempDir(), "tree")
+	if err := os.WriteFile(f, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return u.git("hash-object", "-t", "tree", "--literally", "-w", f)
+}
+
+func TestUnshareInReadOnlyDirectory(t *testing.T) {
+	cache := filepath.Join(t.TempDir(), "pkg-cache")
+	writeFile(t, filepath.Join(cache, "f"), "cached", 0o644)
+	u := newUpstream(t)
+	u.write("skills/agent/dep/SKILL.md", skillDoc("dep", ""))
+	u.write("skills/agent/dep/package.json", "{}")
+	u.commit("one")
+	src := gitSourceConfig(u.url())
+	src.Prepare = []config.PrepareRule{{WhenFile: "package.json", Run: []string{"sh", "-c", "mkdir pkg && ln " + filepath.Join(cache, "f") + " pkg/f && chmod 555 pkg"}, Timeout: 10 * time.Second}}
+	h := newHarness(t, src)
+	h.init()
+	h.refresh("reg")
+	info, err := os.Stat(filepath.Join(cache, "f"))
+	if err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("package cache file mode = %v, %v", info.Mode(), err)
+	}
+	snapFile := filepath.Join(h.m.SnapshotDir("reg", h.m.Current("reg")), "skills/agent/dep/pkg/f")
+	st, err := os.Stat(snapFile)
+	if err != nil || st.Sys().(*syscall.Stat_t).Nlink != 1 {
+		t.Fatalf("snapshot file still shared: %v", err)
+	}
+}
+
+func TestUnshareFailureAbortsExtraction(t *testing.T) {
+	cache := filepath.Join(t.TempDir(), "pkg-cache")
+	writeFile(t, filepath.Join(cache, "f"), "cached", 0o644)
+	if err := os.Chmod(filepath.Join(cache, "f"), 0o200); err != nil { // write-only: unreadable for the copy
+		t.Fatal(err)
+	}
+	defer os.Chmod(filepath.Join(cache, "f"), 0o644)
+	u := newUpstream(t)
+	u.write("skills/agent/dep/SKILL.md", skillDoc("dep", ""))
+	u.write("skills/agent/dep/package.json", "{}")
+	sha := u.commit("one")
+	src := gitSourceConfig(u.url())
+	src.Prepare = []config.PrepareRule{{WhenFile: "package.json", Run: []string{"ln", filepath.Join(cache, "f"), "hl"}, Timeout: 10 * time.Second}}
+	h := newHarness(t, src)
+	h.init()
+	err := h.m.Refresh(context.Background(), "reg", RefreshOptions{})
+	if err == nil || !strings.Contains(err.Error(), "unsharing prepare output") || h.m.Retained("reg", sha) {
+		t.Fatalf("Refresh = %v", err)
+	}
+	info, _ := os.Stat(filepath.Join(cache, "f"))
+	if info.Mode().Perm() != 0o200 {
+		t.Fatalf("cache file mode changed to %v", info.Mode())
 	}
 }

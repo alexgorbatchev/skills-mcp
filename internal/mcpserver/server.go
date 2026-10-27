@@ -118,23 +118,34 @@ func textResult(text string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
 }
 
-// notifier returns a progress callback for a request with a progress token,
-// or nil.
-func notifier(req *mcp.CallToolRequest, log *slog.Logger) func(string) {
+// notifier returns a progress callback bound to the request, and a stop
+// function that silences it once the handler returns, as MCP requires
+// progress to stop after the request completes. Without a progress token
+// both are no-ops.
+func notifier(ctx context.Context, req *mcp.CallToolRequest, log *slog.Logger) (notify func(string), stop func()) {
 	token := req.Params.GetProgressToken()
 	if token == nil || req.Session == nil {
-		return nil
+		return nil, func() {}
 	}
 	var mu sync.Mutex
 	var n float64
-	return func(msg string) {
+	stopped := false
+	notify = func(msg string) {
 		mu.Lock()
+		defer mu.Unlock()
+		if stopped {
+			return
+		}
 		n++
-		progress := n
-		mu.Unlock()
-		err := req.Session.NotifyProgress(context.Background(), &mcp.ProgressNotificationParams{ProgressToken: token, Message: msg, Progress: progress})
+		err := req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{ProgressToken: token, Message: msg, Progress: n})
 		if err != nil {
 			log.Debug("progress notification failed", "error", err)
 		}
 	}
+	stop = func() {
+		mu.Lock()
+		stopped = true
+		mu.Unlock()
+	}
+	return notify, stop
 }

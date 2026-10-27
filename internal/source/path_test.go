@@ -192,3 +192,18 @@ func TestPathSourcePrepareRetry(t *testing.T) {
 		t.Fatalf("Refresh during shutdown = %v", err)
 	}
 }
+
+func TestPathSourceRefusesSymlinkedRoot(t *testing.T) {
+	real := t.TempDir()
+	elsewhere := t.TempDir()
+	writeFile(t, filepath.Join(elsewhere, "a/SKILL.md"), skillDoc("a", ""), 0o644)
+	if err := os.Symlink(elsewhere, filepath.Join(real, "agent")); err != nil {
+		t.Fatal(err)
+	}
+	h := newHarness(t, pathSource(real))
+	h.init()
+	err := h.m.Refresh(context.Background(), "local", RefreshOptions{})
+	if err == nil || !strings.Contains(err.Error(), "is a symbolic link") {
+		t.Fatalf("Refresh = %v", err)
+	}
+}

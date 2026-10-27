@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -386,9 +387,12 @@ func (b *builder) buildSource(field string, rs rawSource) *Source {
 func (b *builder) checkRoots(field string, roots []Root) {
 	for i, r := range roots {
 		f := fmt.Sprintf("%s[%d]", field, i)
-		clean := filepath.ToSlash(filepath.Clean(r.Path))
-		if r.Path == "" || filepath.IsAbs(r.Path) || clean == "." || strings.HasPrefix(clean, "../") || clean == ".." {
+		clean := path.Clean(r.Path)
+		switch {
+		case r.Path == "" || filepath.IsAbs(r.Path) || clean == "." || strings.HasPrefix(clean, "../") || clean == "..":
 			b.fail(f+".path", "must be a repo-relative path inside the repository")
+		case clean != r.Path:
+			b.fail(f+".path", "must be written in clean form, e.g. %q", clean)
 		}
 		if r.Invocation != Model && r.Invocation != User {
 			b.fail(f+".invocation", "must be %q or %q", Model, User)

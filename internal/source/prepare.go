@@ -60,11 +60,14 @@ func (e *extraction) prepare(ctx context.Context, dir string, rec *catalog.Rende
 				return fmt.Errorf("prepare interrupted: %w", err)
 			}
 			// Whatever the outcome, no installed file may share an inode
-			// with a package cache before permissions are set.
-			if checkErr := checkPrepareOutput(abs); err == nil {
-				err = checkErr
-			} else if checkErr != nil && !errors.Is(checkErr, errLinkEscapes) {
-				err = errors.Join(err, checkErr)
+			// with a package cache before permissions are set; a file that
+			// cannot be unshared aborts the extraction.
+			linkErr, unshareErr := checkPrepareOutput(abs)
+			if unshareErr != nil {
+				return fmt.Errorf("unsharing prepare output: %w", unshareErr)
+			}
+			if err == nil {
+				err = linkErr
 			}
 			if err != nil {
 				failed[run.bundle] = true
@@ -108,17 +111,19 @@ var (
 )
 
 // checkPrepareOutput walks the whole directory: it replaces every
-// multiply-linked file with a private copy and reports the first symbolic
-// link that does not resolve inside dir.
-func checkPrepareOutput(dir string) error {
+// multiply-linked file with a private copy, returning the first symbolic
+// link that does not resolve inside dir and, separately, every failure to
+// unshare or walk.
+func checkPrepareOutput(dir string) (linkErr, unshareErr error) {
 	root, err := filepath.EvalSymlinks(dir)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	var linkErr error
+	var unshareErrs []error
 	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			unshareErrs = append(unshareErrs, err)
+			return nil
 		}
 		switch {
 		case d.Type()&fs.ModeSymlink != 0:
@@ -135,22 +140,34 @@ func checkPrepareOutput(dir string) error {
 		case d.Type().IsRegular():
 			info, err := d.Info()
 			if err != nil {
-				return err
+				unshareErrs = append(unshareErrs, err)
+				return nil
 			}
 			if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Nlink > 1 {
-				return unshare(p, info.Mode().Perm())
+				if err := unshare(p, info.Mode().Perm()); err != nil {
+					unshareErrs = append(unshareErrs, err)
+				}
 			}
 		}
 		return nil
 	})
+	return linkErr, errors.Join(append(unshareErrs, err)...)
+}
+
+// unshare replaces a hard-linked file with a private copy of the same mode,
+// giving its directory owner write permission for the duration if needed.
+func unshare(p string, mode fs.FileMode) error {
+	parent := filepath.Dir(p)
+	info, err := os.Stat(parent)
 	if err != nil {
 		return err
 	}
-	return linkErr
-}
-
-// unshare replaces a hard-linked file with a private copy of the same mode.
-func unshare(p string, mode fs.FileMode) error {
+	if perm := info.Mode().Perm(); perm&0o200 == 0 {
+		if err := os.Chmod(parent, perm|0o200); err != nil {
+			return err
+		}
+		defer os.Chmod(parent, perm) // restores the directory's own mode; setPermissions runs later anyway
+	}
 	data, err := os.ReadFile(p)
 	if err != nil {
 		return err
@@ -160,7 +177,7 @@ func unshare(p string, mode fs.FileMode) error {
 		return err
 	}
 	if err := os.Chmod(tmp, mode); err != nil {
-		return err
+		return errors.Join(err, os.Remove(tmp))
 	}
 	return os.Rename(tmp, p)
 }

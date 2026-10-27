@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -22,6 +23,9 @@ func populatePath(root string, roots []string) func(ctx context.Context, dir str
 		var specials []special
 		for _, r := range roots {
 			base := filepath.Join(root, filepath.FromSlash(r))
+			if err := checkRootComponents(root, r); err != nil {
+				return nil, err
+			}
 			err := filepath.WalkDir(base, func(p string, d fs.DirEntry, err error) error {
 				if errors.Is(err, fs.ErrNotExist) && p == base {
 					return fs.SkipAll
@@ -51,6 +55,26 @@ func populatePath(root string, roots []string) func(ctx context.Context, dir str
 		}
 		return specials, nil
 	}
+}
+
+// checkRootComponents refuses a root whose path below the source contains a
+// symbolic link, which would serve content from outside the source.
+func checkRootComponents(root, rel string) error {
+	cur := root
+	for part := range strings.SplitSeq(rel, "/") {
+		cur = filepath.Join(cur, part)
+		info, err := os.Lstat(cur)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("root %s: %s is a symbolic link", rel, cur)
+		}
+	}
+	return nil
 }
 
 func copyFile(src, dst string) error {

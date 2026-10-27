@@ -121,6 +121,9 @@ func TestSubcommand(t *testing.T) {
 	if got := subcommand([]string{"--no-pager", "push", "x"}); got != "push" {
 		t.Fatalf("subcommand = %q", got)
 	}
+	if got := subcommand([]string{"-c", "transfer.fsckObjects=true", "fetch"}); got != "fetch" {
+		t.Fatalf("subcommand with -c = %q", got)
+	}
 	if got := subcommand(nil); got != "" {
 		t.Fatalf("subcommand(nil) = %q", got)
 	}

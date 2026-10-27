@@ -107,3 +107,27 @@ func TestLastLine(t *testing.T) {
 		t.Fatalf("LastLine(empty) = %q", got)
 	}
 }
+
+// A grandchild that ignores SIGTERM and holds no output pipe must still die
+// after the grace period.
+func TestRunKillsDetachedGrandchild(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	script := `sh -c 'trap "" TERM; echo $$ > ` + pidFile + `; exec sleep 30' >/dev/null 2>&1 </dev/null & sleep 30`
+	_, err := Run(context.Background(), Command{Name: "sh", Args: []string{"-c", script}, Timeout: 200 * time.Millisecond, KillGrace: 100 * time.Millisecond})
+	if !errors.As(err, new(*TimeoutError)) {
+		t.Fatalf("error = %v", err)
+	}
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid := strings.TrimSpace(string(data))
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat("/proc/" + pid); err != nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("detached grandchild %s survived", pid)
+}

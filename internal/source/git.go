@@ -43,7 +43,7 @@ func (r *Repo) Clone(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("creating clone directory: %w", err)
 	}
-	if _, err := r.Git.Run(ctx, parent, gitx.Opts{}, "clone", "--bare", "--quiet", "--branch", r.Branch, r.URL, tmp); err != nil {
+	if _, err := r.Git.Run(ctx, parent, gitx.Opts{}, "-c", "transfer.fsckObjects=true", "clone", "--bare", "--quiet", "--branch", r.Branch, r.URL, tmp); err != nil {
 		_ = os.RemoveAll(tmp) // best-effort cleanup; the clone error is returned
 		return fmt.Errorf("cloning %s: %w", r.URL, err)
 	}
@@ -66,7 +66,7 @@ func (r *Repo) Fetch(ctx context.Context) error {
 			return fmt.Errorf("updating origin URL: %w", err)
 		}
 	}
-	if _, err := r.Git.Run(ctx, r.Dir, gitx.Opts{}, "fetch", "--quiet", "origin", "+"+r.Ref()+":"+r.Ref()); err != nil {
+	if _, err := r.Git.Run(ctx, r.Dir, gitx.Opts{}, "-c", "transfer.fsckObjects=true", "fetch", "--quiet", "origin", "+"+r.Ref()+":"+r.Ref()); err != nil {
 		return fmt.Errorf("fetching %s: %w", r.URL, err)
 	}
 	return nil
@@ -99,9 +99,32 @@ func (r *Repo) lsTree(ctx context.Context, sha string, roots []string) ([]treeEn
 		if !ok || len(fields) != 3 {
 			return nil, fmt.Errorf("unexpected ls-tree record %q", rec)
 		}
+		if err := checkTreePath(p, roots); err != nil {
+			return nil, err
+		}
 		entries = append(entries, treeEntry{mode: fields[0], kind: fields[1], oid: fields[2], path: p})
 	}
 	return entries, nil
+}
+
+// checkTreePath rejects tree paths that could leave the extraction
+// directory: non-local paths, empty, ".", "..", or ".git" components, and
+// paths outside the requested roots.
+func checkTreePath(p string, roots []string) error {
+	if !filepath.IsLocal(p) {
+		return fmt.Errorf("refusing tree entry %q: not a local path", p)
+	}
+	for part := range strings.SplitSeq(p, "/") {
+		if part == "" || part == "." || part == ".." || part == ".git" {
+			return fmt.Errorf("refusing tree entry %q: invalid path component %q", p, part)
+		}
+	}
+	for _, r := range roots {
+		if strings.HasPrefix(p, r+"/") {
+			return nil
+		}
+	}
+	return fmt.Errorf("refusing tree entry %q: outside the configured roots", p)
 }
 
 // populate writes the blobs of sha under roots into dir. Symlinks and

@@ -141,6 +141,8 @@ func TestParseErrors(t *testing.T) {
 		{"relative path", "sources: [{name: a, kind: path, path: rel}]\n", "must be absolute or ~-prefixed"},
 		{"writable path", "sources: [{name: a, kind: path, path: /x, writable: true}]\n", "path sources are read-only"},
 		{"root outside", gitSource("    harness_roots: [{path: ../x, invocation: model}]\n"), "harness_roots[0].path: must be a repo-relative path"},
+		{"root not clean", gitSource("    harness_roots: [{path: skills/agent/, invocation: model}]\n"), `must be written in clean form, e.g. "skills/agent"`},
+		{"root with dot", gitSource("    harness_roots: [{path: ./skills, invocation: model}]\n"), "must be written in clean form"},
 		{"root invocation", gitSource("    harness_roots: [{path: x, invocation: both}]\n"), `harness_roots[0].invocation: must be "model" or "user"`},
 		{"var name", gitSource("    template: {vars: {Bad: x}}\n"), "template.vars.Bad: invalid variable name"},
 		{"reserved var", gitSource("    template: {vars: {file_dir: x}}\n"), "template.vars.file_dir: reserved variable name"},

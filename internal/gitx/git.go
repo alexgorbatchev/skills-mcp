@@ -89,9 +89,12 @@ func (g *Git) Run(ctx context.Context, dir string, opts Opts, args ...string) ([
 }
 
 func subcommand(args []string) string {
-	for _, a := range args {
-		if !strings.HasPrefix(a, "-") {
-			return a
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-c" || args[i] == "-C":
+			i++ // skip the option's value
+		case !strings.HasPrefix(args[i], "-"):
+			return args[i]
 		}
 	}
 	return ""

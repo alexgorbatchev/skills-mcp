@@ -488,7 +488,9 @@ func TestPromptAndToolForRemovedSkill(t *testing.T) {
 	if text, err := f.servers.callSkill(config.ClaudeCode, "missing", SkillArgs{}); err == nil {
 		t.Fatalf("missing skill = %s", text)
 	}
-	if notifier(&mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{}}, nil) != nil {
+	notify, stop := notifier(context.Background(), &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{}}, nil)
+	stop()
+	if notify != nil {
 		t.Fatal("notifier without a token")
 	}
 	if f.servers.Server(config.Pi) == nil {

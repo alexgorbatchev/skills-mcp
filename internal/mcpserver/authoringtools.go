@@ -169,7 +169,9 @@ func (s *Servers) addAuthoringTools(h config.HarnessID, srv *mcp.Server) {
 		}),
 		Annotations: publishing,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, a submitArgs) (*mcp.CallToolResult, any, error) {
-		res, err := svc.Submit(ctx, a.ChangeID, a.Message, notifier(req, s.opts.Logger))
+		notify, stop := notifier(ctx, req, s.opts.Logger)
+		defer stop()
+		res, err := svc.Submit(ctx, a.ChangeID, a.Message, notify)
 		if err != nil {
 			return nil, nil, err
 		}

@@ -88,17 +88,19 @@ func Run(ctx context.Context, c Command) (Result, error) {
 		cmd.Stdout = c.Stdout
 	}
 	cmd.Stderr = &stderr
-	var killTimer *time.Timer
+	var cancelled time.Time
 	cmd.Cancel = func() error {
-		pgid := cmd.Process.Pid
-		killTimer = time.AfterFunc(grace, func() { _ = syscall.Kill(-pgid, syscall.SIGKILL) })
-		return syscall.Kill(-pgid, syscall.SIGTERM)
+		cancelled = time.Now()
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 	}
 	cmd.WaitDelay = grace + time.Second
 
 	err := cmd.Run()
-	if killTimer != nil {
-		killTimer.Stop()
+	if !cancelled.IsZero() {
+		// The leader may exit on SIGTERM while group members ignore it:
+		// finish the grace period, then kill whatever remains.
+		time.Sleep(time.Until(cancelled.Add(grace)))
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) // ESRCH when the group is already gone
 	}
 	res := Result{Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}
 	if err == nil {
