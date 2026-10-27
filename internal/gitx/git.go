@@ -59,9 +59,14 @@ type Git struct {
 	env []string
 }
 
+// configEnv are the variables `git rev-parse --local-env-vars` lists that
+// carry configuration rather than a repository location; they are kept, so
+// configuration given to the daemon through its environment applies.
+var configEnv = []string{"GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"}
+
 // New prepares the git environment. Git's repository-location variables
-// (from `git rev-parse --local-env-vars`) are removed, so every command acts
-// on the repository it names. Children run without a controlling terminal
+// (from `git rev-parse --local-env-vars`, except configEnv) are removed, so
+// every command acts on the repository it names. Children run without a controlling terminal
 // (see proc), and an empty GIT_ASKPASS stops git from falling back to
 // core.askPass or SSH_ASKPASS, so nothing can prompt.
 func New(ctx context.Context) (*Git, error) {
@@ -69,7 +74,9 @@ func New(ctx context.Context) (*Git, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listing git's repository variables: %w", err)
 	}
-	local := strings.Fields(string(res.Stdout))
+	local := slices.DeleteFunc(strings.Fields(string(res.Stdout)), func(name string) bool {
+		return slices.Contains(configEnv, name)
+	})
 	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
 		name, _, _ := strings.Cut(kv, "=")
 		return slices.Contains(local, name)

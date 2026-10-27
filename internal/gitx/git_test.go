@@ -116,9 +116,9 @@ func TestRunDisablesConfiguredHooks(t *testing.T) {
 	dir := newRepo(t, g)
 	marker := filepath.Join(dir, "hook-ran")
 	for _, kv := range [][2]string{
-		{"hook.mark.command", "touch " + marker},
+		{"hook.mark.command", "touch " + marker + " #"},
 		{"hook.mark.event", "pre-commit"},
-		{"hook.a=b.command", "touch " + marker},
+		{"hook.a=b.command", "touch " + marker + " #"},
 		{"hook.a=b.event", "reference-transaction"},
 	} {
 		if _, err := g.Run(ctx, dir, Opts{}, "config", "--add", kv[0], kv[1]); err != nil {
@@ -330,5 +330,19 @@ func TestRunDisablesFSMonitor(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatal("control status did not run the fsmonitor")
+	}
+}
+
+// Configuration given through the environment survives the removal of
+// repository-location variables.
+func TestNewKeepsEnvironmentConfiguration(t *testing.T) {
+	isolateConfig(t)
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "user.name")
+	t.Setenv("GIT_CONFIG_VALUE_0", "from-env")
+	g := newGit(t)
+	dir := newRepo(t, g)
+	if got, err := g.Output(context.Background(), dir, "config", "--get", "user.name"); err != nil || got != "from-env" {
+		t.Fatalf("user.name = %q, %v", got, err)
 	}
 }

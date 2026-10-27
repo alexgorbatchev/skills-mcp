@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -71,9 +72,13 @@ func Run(ctx context.Context, opts Options) error {
 	kill, killNow := context.WithCancel(context.WithoutCancel(ctx))
 	defer killNow()
 
-	g, err := gitx.New(kill)
-	if err != nil {
-		return err
+	// Only git sources run git; a configuration of path sources alone needs
+	// no git binary.
+	var g *gitx.Git
+	if slices.ContainsFunc(cfg.Sources, func(s *config.Source) bool { return s.Kind == config.KindGit }) {
+		if g, err = gitx.New(kill); err != nil {
+			return err
+		}
 	}
 	var svc *authoring.Service
 	var servers *mcpserver.Servers
@@ -89,7 +94,7 @@ func Run(ctx context.Context, opts Options) error {
 	})
 	if cfg.DefaultWriteSource != "" {
 		svc = authoring.NewService(authoring.Options{
-			Config: cfg, Dirs: opts.Dirs, Git: g, Sources: src, Logger: log, Shutdown: shutdown, Kill: kill,
+			Config: cfg, Dirs: opts.Dirs, Sources: src, Logger: log, Shutdown: shutdown, Kill: kill,
 		})
 	}
 	servers = mcpserver.New(mcpserver.Options{Config: cfg, Sources: src, Authoring: svc, Logger: log, Version: opts.Version})

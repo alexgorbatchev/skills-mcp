@@ -59,7 +59,7 @@ func (r *Repo) Clone(ctx context.Context) error {
 		return fmt.Errorf("creating clone directory: %w", err)
 	}
 	staged := &Repo{Git: r.Git, Dir: tmp, URL: r.URL, Branch: r.Branch}
-	err = staged.init(ctx)
+	err = staged.init(ctx, parent)
 	if err == nil {
 		err = staged.Fetch(ctx)
 	}
@@ -73,12 +73,42 @@ func (r *Repo) Clone(ctx context.Context) error {
 	return nil
 }
 
-// init creates an empty bare repository without the user's templates.
-func (r *Repo) init(ctx context.Context) error {
-	if _, err := r.Git.Run(ctx, filepath.Dir(r.Dir), gitx.Opts{}, "init", "--quiet", "--bare", "--template=", "--initial-branch="+r.Branch, r.Dir); err != nil {
+// init creates an empty bare repository without the user's templates, in
+// the remote's object format: unlike `git clone`, `git init` would otherwise
+// follow init.defaultObjectFormat, and a fetch across formats fails.
+func (r *Repo) init(ctx context.Context, parent string) error {
+	format, err := r.remoteObjectFormat(ctx, parent)
+	if err != nil {
+		return err
+	}
+	if _, err := r.Git.Run(ctx, parent, gitx.Opts{}, "init", "--quiet", "--bare", "--template=", "--object-format="+format, "--initial-branch="+r.Branch, r.Dir); err != nil {
 		return fmt.Errorf("initializing: %w", err)
 	}
 	return nil
+}
+
+// remoteObjectFormat reads the tracked branch from the remote and derives
+// the object format from the length of its object name; git offers no
+// other way to ask a remote for its format.
+func (r *Repo) remoteObjectFormat(ctx context.Context, dir string) (string, error) {
+	out, err := r.Git.Run(ctx, dir, gitx.Opts{}, "ls-remote", r.URL, r.Ref())
+	if err != nil {
+		return "", fmt.Errorf("listing %s: %w", r.Ref(), err)
+	}
+	for line := range strings.Lines(string(out)) {
+		oid, ref, _ := strings.Cut(strings.TrimSuffix(line, "\n"), "\t")
+		if ref != r.Ref() {
+			continue
+		}
+		switch len(oid) {
+		case 40:
+			return "sha1", nil
+		case 64:
+			return "sha256", nil
+		}
+		return "", fmt.Errorf("unrecognized object name %q for %s", oid, r.Ref())
+	}
+	return "", fmt.Errorf("the remote has no %s", r.Ref())
 }
 
 // Fetch updates the tracked branch ref, first pointing origin at the

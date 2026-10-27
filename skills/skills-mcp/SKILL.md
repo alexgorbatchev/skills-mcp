@@ -4,7 +4,7 @@ description: "Use when operating the skills-mcp CLI: running the skills daemon, 
 author: "alexgorbatchev"
 metadata:
   created_on: 2026-10-26 17:19
-  last_modified: 2026-10-26 18:40
+  last_modified: 2026-10-26 21:20
   status: current
 ---
 
@@ -26,7 +26,7 @@ Paths printed by every command show the home directory as `~`.
 | --- | --- |
 | `$XDG_CONFIG_HOME/skills-mcp/config.yaml` | Configuration (default `~/.config/skills-mcp/config.yaml`); `--config` overrides it. |
 | `$XDG_CONFIG_HOME/skills-mcp/token` | Bearer token, 64 hex characters, mode `0600`; created by `token show` or `server run`. |
-| `$XDG_CONFIG_HOME/skills-mcp/env` | `KEY=value` lines for the systemd unit: `PATH` (must reach `git` and `bun`), `SSH_AUTH_SOCK`, and `template.env` values. |
+| `$XDG_CONFIG_HOME/skills-mcp/env` | `KEY=value` lines for the systemd unit: `PATH` (must reach `git` when any `git` source is configured, and the programs `prepare` and `validate` run, such as `bun`), `SSH_AUTH_SOCK`, and `template.env` values. |
 | `$XDG_STATE_HOME/skills-mcp/` | Daemon lock, bare clones (`sources/<name>/repo.git`), and change records (`changes/`). |
 | `$XDG_CACHE_HOME/skills-mcp/` | Rendered, read-only snapshots (`sources/<name>/rev/<revision>/`). |
 | `AGENT` | Output mode, see above. |

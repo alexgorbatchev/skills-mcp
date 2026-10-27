@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -695,7 +697,7 @@ func TestCloneNeverRunsConditionallyIncludedHooks(t *testing.T) {
 	u.commit("one")
 	marker := filepath.Join(t.TempDir(), "hook-ran")
 	home := isolateGitConfig(t, "[includeIf \"hasconfig:remote.*.url:file://**\"]\n\tpath = hooks.inc\n")
-	writeFile(t, filepath.Join(home, "hooks.inc"), "[hook \"audit\"]\n\tcommand = touch "+marker+"\n\tevent = reference-transaction\n", 0o644)
+	writeFile(t, filepath.Join(home, "hooks.inc"), "[hook \"audit\"]\n\tcommand = \"touch "+marker+" #\"\n\tevent = reference-transaction\n", 0o644)
 
 	h := newHarness(t, gitSourceConfig(u.url()))
 	h.init()
@@ -706,6 +708,31 @@ func TestCloneNeverRunsConditionallyIncludedHooks(t *testing.T) {
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("configured hook ran")
 	}
+	if !supportsConfigHooks(t) {
+		t.Log("git predates configured hooks; skipping the control run")
+		return
+	}
+	// Control: a plain clone runs the hook.
+	if out, err := exec.Command("git", "clone", "-q", "--bare", u.url(), filepath.Join(t.TempDir(), "plain.git")).CombinedOutput(); err != nil {
+		t.Fatalf("control clone: %v: %s", err, out)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("control clone did not run the configured hook")
+	}
+}
+
+// supportsConfigHooks reports whether git is 2.54 or later.
+func supportsConfigHooks(t *testing.T) bool {
+	t.Helper()
+	out, err := exec.Command("git", "version").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var major, minor int
+	if _, err := fmt.Sscanf(string(out), "git version %d.%d", &major, &minor); err != nil {
+		t.Fatalf("parsing %q: %v", out, err)
+	}
+	return major > 2 || major == 2 && minor >= 54
 }
 
 // An insteadOf rewrite of the source URL does not make every refresh
@@ -730,5 +757,32 @@ func TestFetchKeepsRewrittenOriginURL(t *testing.T) {
 	}
 	if !os.SameFile(before, after) {
 		t.Fatal("refresh rewrote the clone's configuration")
+	}
+}
+
+// The bare clone takes the remote's object format, whatever format git
+// defaults to for new repositories, and extraction handles both formats.
+func TestCloneFollowsRemoteObjectFormat(t *testing.T) {
+	for _, tt := range []struct{ remote, local string }{{"sha1", "sha256"}, {"sha256", "sha1"}} {
+		t.Run(tt.remote+" remote", func(t *testing.T) {
+			u := newUpstreamFormat(t, tt.remote)
+			u.write("skills/agent/a/SKILL.md", skillDoc("a", "one"))
+			sha := u.commit("one")
+			isolateGitConfig(t, "")
+			t.Setenv("GIT_DEFAULT_HASH", tt.local)
+			h := newHarness(t, gitSourceConfig(u.url()))
+			h.init()
+			h.refresh("reg")
+			if got := h.m.Current("reg"); got != sha {
+				t.Fatalf("current = %q, want %q", got, sha)
+			}
+			if h.lastView(config.ClaudeCode).Skill("a") == nil {
+				t.Fatal("skill a not served")
+			}
+			out, err := exec.Command("git", "--git-dir="+h.m.Repo("reg").Dir, "rev-parse", "--show-object-format").Output()
+			if got := strings.TrimSpace(string(out)); err != nil || got != tt.remote {
+				t.Fatalf("clone object format = %q, %v; want %s", got, err, tt.remote)
+			}
+		})
 	}
 }

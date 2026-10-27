@@ -195,7 +195,7 @@ func (e *env) start() {
 			e.mu.Unlock()
 		},
 	})
-	e.svc = NewService(Options{Config: e.cfg, Dirs: e.dirs, Git: e.git, Sources: e.src, Now: e.clock.Now})
+	e.svc = NewService(Options{Config: e.cfg, Dirs: e.dirs, Sources: e.src, Now: e.clock.Now})
 	if err := e.src.Init(); err != nil {
 		e.t.Fatal(err)
 	}

@@ -201,11 +201,29 @@ func TestRunConfigErrors(t *testing.T) {
 	}
 }
 
+// Git sources need git; path sources alone do not.
 func TestRunWithoutGit(t *testing.T) {
-	opts, _ := setup(t, false)
+	opts, root := setup(t, false)
 	t.Setenv("PATH", t.TempDir())
 	if err := Run(context.Background(), opts); err == nil || !strings.Contains(err.Error(), "listing git's repository variables") {
 		t.Fatalf("Run without git = %v", err)
+	}
+	write(t, opts.ConfigPath, "listen: 127.0.0.1:0\nsources:\n  - name: local\n    kind: path\n    path: "+filepath.Join(root, "local")+"\n    roots: [{path: agent, invocation: model}]\n")
+	ready := make(chan string, 1)
+	opts.Ready = func(addr string) { ready <- addr }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, opts) }()
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatalf("path-only daemon exited: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("path-only daemon did not become ready")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("shutdown = %v", err)
 	}
 }
 

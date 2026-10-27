@@ -33,7 +33,6 @@ var (
 type Options struct {
 	Config  *config.Config
 	Dirs    paths.Dirs
-	Git     *gitx.Git
 	Sources *source.Manager
 	Logger  *slog.Logger
 	Now     func() time.Time

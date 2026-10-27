@@ -42,7 +42,7 @@ tar -xzf skills-mcp.tar.gz skills-mcp && mv skills-mcp ~/.local/bin/
 
 # Setup
 
-- [Git](https://git-scm.com/) runs every repository operation; pushes use your SSH agent and Git configuration, so the daemon needs `SSH_AUTH_SOCK` for writable sources.
+- [Git](https://git-scm.com/) runs every operation on `git` sources; pushes use your SSH agent and Git configuration, so the daemon needs `SSH_AUTH_SOCK` for writable sources. `path` sources alone need no Git.
 - [Bun](https://bun.sh/) is needed only when a source's `prepare` or `validate` commands call it, as ai-registry's do.
 - Under systemd, the daemon reads `PATH`, `SSH_AUTH_SOCK`, and template environment variables from `~/.config/skills-mcp/env`. Copy `contrib/systemd/skills-mcp.service` to `~/.config/systemd/user/`.
 

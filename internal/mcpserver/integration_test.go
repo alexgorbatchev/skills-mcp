@@ -120,7 +120,7 @@ func newFixture(t *testing.T, withAuthoring bool, budget int) *fixture {
 	})
 	if withAuthoring {
 		cfg.DefaultWriteSource = "reg"
-		svc = authoring.NewService(authoring.Options{Config: cfg, Dirs: dirs, Git: g, Sources: f.src})
+		svc = authoring.NewService(authoring.Options{Config: cfg, Dirs: dirs, Sources: f.src})
 	}
 	f.servers = New(Options{Config: cfg, Sources: f.src, Authoring: svc, Version: "test"})
 	if err := f.src.Init(); err != nil {

@@ -25,8 +25,14 @@ type upstream struct {
 
 func newUpstream(t *testing.T) *upstream {
 	t.Helper()
+	return newUpstreamFormat(t, "sha1")
+}
+
+// newUpstreamFormat creates an upstream with the given object format.
+func newUpstreamFormat(t *testing.T, format string) *upstream {
+	t.Helper()
 	u := &upstream{t: t, dir: t.TempDir()}
-	u.git("init", "-q", "-b", "main")
+	u.git("init", "-q", "-b", "main", "--object-format="+format)
 	u.git("config", "user.name", "t")
 	u.git("config", "user.email", "t@example.com")
 	return u
