@@ -257,3 +257,36 @@ func TestRewoundRemoteIsNotRepublished(t *testing.T) {
 		t.Fatalf("attempts = %d", res.Publication.Attempts)
 	}
 }
+
+func TestPushNeverIncludesTags(t *testing.T) {
+	e := newEnv(t)
+	repo := e.src.Repo("reg").Dir
+	// A tag the remote no longer has, with push.followTags enabled as in
+	// many user configurations.
+	run(t, repo, "tag", "-a", "-m", "removed upstream", "v1", e.remote.tip())
+	run(t, repo, "config", "push.followTags", "true")
+	id := e.open()
+	editGolang(t, e, id, "body", "agent")
+	if _, err := e.submit(id, "m"); err != nil {
+		t.Fatal(err)
+	}
+	if out := run(t, e.remote.bare, "tag", "--list"); out != "" {
+		t.Fatalf("submit pushed tags: %q", out)
+	}
+}
+
+func TestDeletedRemoteBranchFailsSubmit(t *testing.T) {
+	e := newEnv(t)
+	id := e.open()
+	editGolang(t, e, id, "body", "agent")
+	run(t, e.remote.bare, "branch", "-m", "main", "other")
+	_, err := e.submit(id, "m")
+	mustErr(t, err, "refreshing after a rejected push")
+	rec := e.record(id)
+	if rec.State != StateOpen || rec.Commit == nil || rec.PushStarted {
+		t.Fatalf("record = %+v", rec)
+	}
+	if out := run(t, e.remote.bare, "branch", "--list", "main"); out != "" {
+		t.Fatal("submit recreated the deleted branch")
+	}
+}

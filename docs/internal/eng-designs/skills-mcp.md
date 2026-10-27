@@ -1,6 +1,6 @@
 ---
 created_on: 2026-10-26 10:13
-last_modified: 2026-10-26 20:05
+last_modified: 2026-10-26 20:16
 status: current
 ---
 
@@ -693,7 +693,7 @@ The tool handler acquires the change mutex and starts the pipeline in a goroutin
    6. Delete the verification directory after adding owner write permission.
    7. On any verification failure, run `git reset --soft <base_revision>`, clear `commit` and `message`, and fail.
 5. Publish, with at most three pushes per submit call:
-   1. Set `push_started` and persist the record. Run `git -C repo.git push --porcelain --force-with-lease=refs/heads/<branch>:<base_revision> origin <commit>:refs/heads/<branch>`, then clear `push_started` once a ref status line has been parsed and its outcome below recorded. When no ref status line is parsed (timeout or transport failure), run 5.2's `Refresh` and `is-ancestor` check: when the commit is on the branch, clear `push_started` and go to 5.4; otherwise leave `push_started` set and fail the submit with Git's stderr. A `*`, ` `, `+`, or `=` flag for the ref is success: go to 5.4. A `!` flag with `(non-fast-forward)`, `(fetch first)`, or `(stale info)` (the remote branch moved away from the base, forward or backward) is a rejection: go to 5.2. Anything else fails the submit with Git's stderr.
+   1. Set `push_started` and persist the record. Run `git -C repo.git push --porcelain --no-follow-tags --force-with-lease=refs/heads/<branch>:<base_revision> origin <commit>:refs/heads/<branch>` (`--no-follow-tags` overrides a user's `push.followTags`, so no tag is ever pushed), then clear `push_started` once a ref status line has been parsed and its outcome below recorded. When no ref status line is parsed (timeout or transport failure), run 5.2's `Refresh` and `is-ancestor` check: when the commit is on the branch, clear `push_started` and go to 5.4; otherwise leave `push_started` set and fail the submit with Git's stderr. A `*`, ` `, `+`, or `=` flag for the ref is success: go to 5.4. A `!` flag with `(non-fast-forward)`, `(fetch first)`, or `(stale info)` (the remote branch moved away from the base, forward or backward) is a rejection: go to 5.2. Anything else fails the submit with Git's stderr.
    2. Call `Refresh(source)`. When it returns an error, fail the submit with that error. When `git merge-base --is-ancestor <commit> refs/heads/<branch>` succeeds, the change is already published: go to 5.4.
    3. Set `rebase_onto` to the commit at `refs/heads/<branch>` and persist the record. Run `git -C <worktree> rebase --onto <rebase_onto> <base_revision>`, which replays only the change commit even when the upstream branch was force-pushed. On a nonzero exit, capture conflicting paths from `git diff --name-only -z --diff-filter=U` and stderr, run `git rebase --abort` when a rebase is in progress, clear `rebase_onto`, and fail the submit with `last_error` naming the new tip, the paths, and stderr; the agent discards the change and opens a new one. When the rebase exits 0 with `HEAD` equal to the new tip, the change already exists upstream: set `base_revision` to the new tip, clear `commit`, `message`, and `rebase_onto`, persist the record, and fail with `last_error` "change already applied upstream at <new tip>; discard it". Otherwise set `base_revision` to the new tip and `commit` to the rebased `HEAD`, clear `rebase_onto`, persist the record, repeat steps 3–4, and return to 5.1. When the third push of this call is rejected, the submit fails.
    4. Record `publication` with the pushes made in this call, set `state` to `submitted`, persist the record, and run the lifecycle cleanup. Then call `Refresh(source)` with its own 180-second deadline; when it fails, record its error in `publication.refresh_error`. Return success.
@@ -1522,4 +1522,11 @@ Outcome: Q11A2 restated as a generic, configuration-driven `prepare` step (like 
 
 | Topic | Revision | Status |
 |---|---|---|
-| Rewound remotes | Pushes carry a lease on `base_revision`; a remote rewound below the base (or moved, or deleted) rejects the push as stale, and the change is rebased onto the real tip and re-verified, so removed commits are never republished unscanned. | Specified in sections 3, 8, 13 |
+| Rewound remotes | Pushes carry a lease on `base_revision`; a remote rewound below the base or moved past it rejects the push as stale, and the change is rebased onto the real tip and re-verified, so removed commits are never republished unscanned. A deleted branch also rejects the push; the following fetch fails, so the submit fails and the change stays open until the branch exists again. | Specified in sections 3, 8, 13 |
+
+### A.22 Implementation review 6: findings applied
+
+| Topic | Revision | Status |
+|---|---|---|
+| Tags | Pushes pass `--no-follow-tags`, so a user's `push.followTags` never publishes tags, including tags deleted upstream. | Specified in section 8 |
+| Deleted branch | A deleted remote branch fails the submit and leaves the change open; covered by a test. | Implemented and tested |
