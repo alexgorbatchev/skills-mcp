@@ -1,6 +1,6 @@
 ---
 created_on: 2026-10-26 10:13
-last_modified: 2026-10-26 20:16
+last_modified: 2026-10-26 20:42
 status: current
 ---
 
@@ -120,6 +120,12 @@ Verified with git 2.43 against local bare repositories:
 - `git archive` applies `export-ignore` and `export-subst` from in-tree `.gitattributes`.
 - Porcelain `git diff` honors `diff.external` and `.gitattributes` textconv drivers, so its output can differ from the blob content; `--no-ext-diff --no-textconv` disables both.
 - A global `core.hooksPath` runs hooks for `worktree add` (`post-checkout`), `rebase` (`pre-rebase`, `prepare-commit-msg`, `post-commit`, `post-rewrite`), `push` (`pre-push`), and ref updates (`reference-transaction`).
+
+Verified with git 2.56:
+
+- Hooks defined in configuration (`hook.<name>.command` with `hook.<name>.event`, Git 2.54 and later) run even with `-c core.hooksPath=/dev/null`. `hook.<name>.enabled=false` disables one; `-c` splits at the first `=`, so it cannot name a hook whose name contains `=`, while `--config-env=<key>=<variable>` splits at the last `=` and can.
+- With `safe.bareRepository=explicit`, `git -C repo.git <command>` fails with exit 128; `--git-dir` names the repository explicitly and works.
+- `clone.defaultRemoteName` renames the remote of `git clone --bare`; `--origin origin` overrides it.
 - A rebase whose change already exists upstream drops the commit and exits 0 with `HEAD` at the upstream tip.
 - `-c gc.auto=0` or `-c maintenance.auto=false` makes `git maintenance run --auto` skip garbage collection.
 - Fetching `+refs/heads/<branch>:refs/heads/<branch>` into a bare repository with worktrees, and rebasing inside such a worktree, both work.
@@ -151,7 +157,7 @@ A go-sdk v1.8.0 stdio server with 50 registered tools uses 12.5 MB RSS after `to
 
 ```
 GitHub repo (storage of record)
-   │  git clone --bare; git fetch origin +refs/heads/<branch>:refs/heads/<branch>
+   │  git clone --bare --origin origin; git fetch origin +refs/heads/<branch>:refs/heads/<branch>
    ▼
 $XDG_STATE_HOME/skills-mcp/sources/<source>/repo.git
    │  git ls-tree + cat-file → temp dir → render templates → chmod → rename to rev/<sha>
@@ -497,11 +503,11 @@ Scaffold with `go-scaffold`; module path `github.com/alexgorbatchev/skills-mcp`.
 | `internal/daemon/daemon.go` | `Run`: lock, config, token, startup sequence, HTTP server, background loops, shutdown sequence. |
 | `internal/homepath/homepath.go` | Shared helper folding the home directory to `~` in printed paths and free text. |
 | `internal/token/token.go` | Token creation through a temporary file and `link`, and strict reading. |
-| `internal/proc/proc.go` | Child processes in their own process group with timeouts, group SIGTERM then SIGKILL, `WaitDelay`, and `Pdeathsig` on Linux. |
+| `internal/proc/proc.go` | Child processes in their own session and process group, without a controlling terminal, with timeouts, group SIGTERM then SIGKILL, `WaitDelay`, and `Pdeathsig` on Linux. |
 | `internal/config/config.go` | Parse `config.yaml`, apply defaults, validate fields. |
 | `internal/paths/paths.go` | XDG config, cache, and state directories for the app. |
-| `internal/gitx/git.go` | `git` exec wrapper over `internal/proc`: fixed environment and `-c` options, per-command timeouts, stderr capture, `git push --porcelain` result parsing. Source mutexes live in `internal/source/manager.go`. |
-| `internal/source/git.go` | Bare clone, refspec fetch, tree materialization from `git ls-tree -r -z` and `git cat-file --batch`. |
+| `internal/gitx/git.go` | `git` exec wrapper over `internal/proc`: fixed environment and `-c` options, disabling of hooks defined in configuration, `--git-dir` for bare repositories, per-command timeouts, stderr capture, `git push --porcelain` result parsing. Source mutexes live in `internal/source/manager.go`. |
+| `internal/source/git.go` | Bare clone (`--origin origin`), git commands on the bare clone, refspec fetch, tree materialization from `git ls-tree -r -z` and `git cat-file --batch`. |
 | `internal/source/path.go` | `path` sources: recursive fsnotify watch with a 500 ms debounce, path source revision, materialization by copy. |
 | `internal/source/prepare.go` | `prepare` rule execution in extraction and verification trees: matching directories, argv execution through the shared process wrapper, link and inode checks, `prepare_failed` diagnostics. |
 | `internal/catalog/ignore.go` | `ignore_file` evaluation: gitignore patterns from ignore files at or below the bundle directory, the `./` prefix rule, `node_modules`, and the ignore files themselves. |
@@ -564,9 +570,9 @@ interface PiSkillsLibrarySettings {
 
 ### Git execution
 
-- Every `git` invocation runs with `GIT_TERMINAL_PROMPT=0`, `SSH_ASKPASS_REQUIRE=never`, and `-c core.hooksPath=/dev/null`. When neither `GIT_SSH_COMMAND` nor `core.sshCommand` is set, it also sets `GIT_SSH_COMMAND="ssh -o BatchMode=yes"`. Every invocation except the hourly maintenance command also passes `-c gc.auto=0 -c maintenance.auto=false`. The maintenance command runs as `git -c gc.autoDetach=false -c maintenance.autoDetach=false maintenance run --auto` with a 600-second timeout, so it stays in its process group under the source mutex; a killed run leaves only temporary packs. Every invocation except `git check-ignore` sets `GIT_LITERAL_PATHSPECS=1`, so agent-supplied paths are never globs. `git check-ignore` rejects literal pathspec magic (exit 128 in git 2.43) and already matches its inputs as literal pathnames; it runs as `git check-ignore --stdin -z` with the path on stdin.
+- Every `git` invocation runs with `GIT_TERMINAL_PROMPT=0`, `SSH_ASKPASS_REQUIRE=never`, and `-c core.hooksPath=/dev/null`, in a new session without a controlling terminal, so neither ssh nor a credential helper can prompt; the user's ssh configuration, including `GIT_SSH_COMMAND` and `core.sshCommand`, applies unchanged. Before each invocation, `git config -z --name-only --get-regexp '^hook\..+\.(command|event)$'` runs in the same repository context, and every hook name it lists is disabled with `--config-env=hook.<name>.enabled=SKILLS_MCP_HOOK_ENABLED` (the variable holds `false`); a listing failure other than exit 1 (no hook keys) fails the command. Commands on the bare clone run as `git -C repo.git --git-dir=.`, so `safe.bareRepository=explicit` does not refuse them; commands in a change worktree run as `git -C <worktree>`. Every invocation except the hourly maintenance command also passes `-c gc.auto=0 -c maintenance.auto=false`. The maintenance command runs as `git -c gc.autoDetach=false -c maintenance.autoDetach=false maintenance run --auto` with a 600-second timeout, so it stays in its process group under the source mutex; a killed run leaves only temporary packs. Every invocation except `git check-ignore` sets `GIT_LITERAL_PATHSPECS=1`, so agent-supplied paths are never globs. `git check-ignore` rejects literal pathspec magic (exit 128 in git 2.43) and already matches its inputs as literal pathnames; it runs as `git check-ignore --stdin -z` with the path on stdin.
 - Commands that produce diffs for scanning use plumbing with `--no-ext-diff --no-textconv --no-color`. Every command whose output lists paths runs with `-z` (or `--porcelain -z`), so no path is quoted.
-- Timeouts: 120 seconds for `clone`, `fetch`, `push`, and `ls-remote`; 60 seconds for every other command; each also bounded by the caller's deadline. Each command runs in its own process group (`SysProcAttr.Setpgid`); a timeout sends SIGTERM to the whole group from `cmd.Cancel`, and after a 5-second grace period the wrapper's own timer sends `syscall.Kill(-pgid, SIGKILL)` to the group; `cmd.WaitDelay` is 6 seconds, and the operation fails with the command name and the timeout. The `validate` command runs the same way.
+- Timeouts: 120 seconds for `clone`, `fetch`, `push`, and `ls-remote`; 60 seconds for every other command; each also bounded by the caller's deadline. Each command runs in its own session and process group (`SysProcAttr.Setsid`); a timeout sends SIGTERM to the whole group from `cmd.Cancel`, and after a 5-second grace period the wrapper's own timer sends `syscall.Kill(-pgid, SIGKILL)` to the group; `cmd.WaitDelay` is 6 seconds, and the operation fails with the command name and the timeout. The `validate` command runs the same way.
 - Commits made by the daemon also pass `--no-verify`. Commit signing follows the user's Git configuration.
 - Git commands run on daemon-owned contexts: the submit pipeline's detached context, the refresh loop's context, the startup context, or, for every other authoring tool, a 120-second deadline derived from the daemon's kill context and held under the change mutex. They never run on an MCP request context. Cleanup after a failed or expired step (`git rebase --abort`, `git reset --soft`) runs on a fresh `context.WithoutCancel` with a 60-second deadline.
 
@@ -693,7 +699,7 @@ The tool handler acquires the change mutex and starts the pipeline in a goroutin
    6. Delete the verification directory after adding owner write permission.
    7. On any verification failure, run `git reset --soft <base_revision>`, clear `commit` and `message`, and fail.
 5. Publish, with at most three pushes per submit call:
-   1. Set `push_started` and persist the record. Run `git -C repo.git push --porcelain --no-follow-tags --force-with-lease=refs/heads/<branch>:<base_revision> origin <commit>:refs/heads/<branch>` (`--no-follow-tags` overrides a user's `push.followTags`, so no tag is ever pushed), then clear `push_started` once a ref status line has been parsed and its outcome below recorded. When no ref status line is parsed (timeout or transport failure), run 5.2's `Refresh` and `is-ancestor` check: when the commit is on the branch, clear `push_started` and go to 5.4; otherwise leave `push_started` set and fail the submit with Git's stderr. A `*`, ` `, `+`, or `=` flag for the ref is success: go to 5.4. A `!` flag with `(non-fast-forward)`, `(fetch first)`, or `(stale info)` (the remote branch moved away from the base, forward or backward) is a rejection: go to 5.2. Anything else fails the submit with Git's stderr.
+   1. Set `push_started` and persist the record. Run `git -C repo.git --git-dir=. push --porcelain --no-verify --no-follow-tags --force-with-lease=refs/heads/<branch>:<base_revision> origin <commit>:refs/heads/<branch>` (`--no-follow-tags` overrides a user's `push.followTags`, so no tag is ever pushed; `--no-verify` skips `pre-push` hooks), then clear `push_started` once a ref status line has been parsed and its outcome below recorded. When no ref status line is parsed (timeout or transport failure), run 5.2's `Refresh` and `is-ancestor` check: when the commit is on the branch, clear `push_started` and go to 5.4; otherwise leave `push_started` set and fail the submit with Git's stderr. A `*`, ` `, `+`, or `=` flag for the ref is success: go to 5.4. A `!` flag with `(non-fast-forward)`, `(fetch first)`, or `(stale info)` (the remote branch moved away from the base, forward or backward) is a rejection: go to 5.2. Anything else fails the submit with Git's stderr.
    2. Call `Refresh(source)`. When it returns an error, fail the submit with that error. When `git merge-base --is-ancestor <commit> refs/heads/<branch>` succeeds, the change is already published: go to 5.4.
    3. Set `rebase_onto` to the commit at `refs/heads/<branch>` and persist the record. Run `git -C <worktree> rebase --onto <rebase_onto> <base_revision>`, which replays only the change commit even when the upstream branch was force-pushed. On a nonzero exit, capture conflicting paths from `git diff --name-only -z --diff-filter=U` and stderr, run `git rebase --abort` when a rebase is in progress, clear `rebase_onto`, and fail the submit with `last_error` naming the new tip, the paths, and stderr; the agent discards the change and opens a new one. When the rebase exits 0 with `HEAD` equal to the new tip, the change already exists upstream: set `base_revision` to the new tip, clear `commit`, `message`, and `rebase_onto`, persist the record, and fail with `last_error` "change already applied upstream at <new tip>; discard it". Otherwise set `base_revision` to the new tip and `commit` to the rebased `HEAD`, clear `rebase_onto`, persist the record, repeat steps 3–4, and return to 5.1. When the third push of this call is rejected, the submit fails.
    4. Record `publication` with the pushes made in this call, set `state` to `submitted`, persist the record, and run the lifecycle cleanup. Then call `Refresh(source)` with its own 180-second deadline; when it fails, record its error in `publication.refresh_error`. Return success.
@@ -1530,3 +1536,12 @@ Outcome: Q11A2 restated as a generic, configuration-driven `prepare` step (like 
 |---|---|---|
 | Tags | Pushes pass `--no-follow-tags`, so a user's `push.followTags` never publishes tags, including tags deleted upstream. | Specified in section 8 |
 | Deleted branch | A deleted remote branch fails the submit and leaves the change open; covered by a test. | Implemented and tested |
+
+### A.23 Implementation review 7: findings applied
+
+| Topic | Revision | Status |
+|---|---|---|
+| Hooks defined in configuration | Git 2.54 runs `hook.<name>.command` hooks regardless of `core.hooksPath`. Every invocation lists the configured hook names in its own repository context and disables each with `--config-env`, which also handles names containing `=`; pushes also pass `--no-verify`. A hook defined between the listing and the command is not covered. | Specified in section 8; tested against git 2.56 |
+| Remote name | The bare clone passes `--origin origin`, so a global `clone.defaultRemoteName` no longer breaks fetch and push. | Specified in sections 3, 8; tested |
+| `safe.bareRepository=explicit` | Commands on the bare clone pass `--git-dir=.`. | Specified in section 8; tested |
+| ssh prompts | The daemon no longer probes `core.sshCommand` from its own working directory or overrides `GIT_SSH_COMMAND`; every child runs in a new session without a controlling terminal, so ssh cannot prompt under any ssh configuration. | Specified in section 8; tested |

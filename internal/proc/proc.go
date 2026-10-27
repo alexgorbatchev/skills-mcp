@@ -1,5 +1,6 @@
-// Package proc runs child processes in their own process group with bounded
-// timeouts, terminating the whole group on timeout or cancellation.
+// Package proc runs child processes in their own session, without a
+// controlling terminal, with bounded timeouts, terminating the whole process
+// group on timeout or cancellation.
 package proc
 
 import (

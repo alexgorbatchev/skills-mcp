@@ -134,10 +134,10 @@ func (s *Service) removeOrphans(ctx context.Context) {
 			continue
 		}
 		s.withSource(name, func() {
-			if _, err := repo.Git.Run(ctx, repo.Dir, gitx.Opts{}, "worktree", "prune"); err != nil {
+			if _, err := repo.Run(ctx, gitx.Opts{}, "worktree", "prune"); err != nil {
 				s.log.Warn("pruning worktrees failed", "source", name, "error", err)
 			}
-			out, err := repo.Git.Output(ctx, repo.Dir, "for-each-ref", "--format=%(refname:short)", "refs/heads/skills-mcp/change/")
+			out, err := repo.Output(ctx, "for-each-ref", "--format=%(refname:short)", "refs/heads/skills-mcp/change/")
 			if err != nil {
 				s.log.Warn("listing change branches failed", "source", name, "error", err)
 				return
@@ -147,7 +147,7 @@ func (s *Service) removeOrphans(ctx context.Context) {
 				if _, ok := s.store.get(id); ok {
 					continue
 				}
-				if _, err := repo.Git.Run(ctx, repo.Dir, gitx.Opts{}, "branch", "-D", branch); err != nil {
+				if _, err := repo.Run(ctx, gitx.Opts{}, "branch", "-D", branch); err != nil {
 					s.log.Warn("deleting orphaned branch failed", "branch", branch, "error", err)
 				}
 			}
@@ -227,7 +227,7 @@ func (s *Service) Open(_ context.Context, harness config.HarnessID, sourceName, 
 	s.store.add(c)
 	var addErr error
 	s.withSource(sourceName, func() {
-		_, addErr = repo.Git.Run(ctx, repo.Dir, gitx.Opts{}, "worktree", "add", "--quiet", "-b", rec.Branch, s.store.worktreePath(id), base)
+		_, addErr = repo.Run(ctx, gitx.Opts{}, "worktree", "add", "--quiet", "-b", rec.Branch, s.store.worktreePath(id), base)
 	})
 	if addErr != nil {
 		rec.State = StateDiscarded
@@ -300,15 +300,15 @@ func (s *Service) cleanup(ctx context.Context, rec *Record) {
 	wt := s.store.worktreePath(rec.ChangeID)
 	s.withSource(rec.Source, func() {
 		if _, err := os.Stat(wt); err == nil {
-			if _, err := repo.Git.Run(ctx, repo.Dir, gitx.Opts{}, "worktree", "remove", "-f", "-f", wt); err != nil {
+			if _, err := repo.Run(ctx, gitx.Opts{}, "worktree", "remove", "-f", "-f", wt); err != nil {
 				s.log.Warn("removing worktree failed", "change_id", rec.ChangeID, "error", err)
 			}
 		}
-		if _, err := repo.Git.Run(ctx, repo.Dir, gitx.Opts{}, "worktree", "prune"); err != nil {
+		if _, err := repo.Run(ctx, gitx.Opts{}, "worktree", "prune"); err != nil {
 			s.log.Warn("pruning worktrees failed", "change_id", rec.ChangeID, "error", err)
 		}
-		if _, err := repo.Git.Run(ctx, repo.Dir, gitx.Opts{}, "show-ref", "--verify", "--quiet", "refs/heads/"+rec.Branch); err == nil {
-			if _, err := repo.Git.Run(ctx, repo.Dir, gitx.Opts{}, "branch", "-D", rec.Branch); err != nil {
+		if _, err := repo.Run(ctx, gitx.Opts{}, "show-ref", "--verify", "--quiet", "refs/heads/"+rec.Branch); err == nil {
+			if _, err := repo.Run(ctx, gitx.Opts{}, "branch", "-D", rec.Branch); err != nil {
 				s.log.Warn("deleting change branch failed", "change_id", rec.ChangeID, "error", err)
 			}
 		}

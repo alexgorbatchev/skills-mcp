@@ -118,7 +118,7 @@ func (s *Service) worktreeState(ctx context.Context, sourceName, wt string) (str
 	var out []byte
 	var err error
 	s.withSource(sourceName, func() {
-		out, err = repo.Git.Run(ctx, repo.Dir, gitx.Opts{}, "worktree", "list", "--porcelain", "-z")
+		out, err = repo.Run(ctx, gitx.Opts{}, "worktree", "list", "--porcelain", "-z")
 	})
 	if err != nil {
 		return "", fmt.Errorf("listing worktrees: %w", err)
@@ -188,7 +188,7 @@ func (s *Service) onBranch(ctx context.Context, rec *Record, commit string) bool
 	repo := s.opts.Sources.Repo(rec.Source)
 	var err error
 	s.withSource(rec.Source, func() {
-		_, err = repo.Git.Run(ctx, repo.Dir, gitx.Opts{}, "merge-base", "--is-ancestor", commit, repo.Ref())
+		_, err = repo.Run(ctx, gitx.Opts{}, "merge-base", "--is-ancestor", commit, repo.Ref())
 	})
 	return err == nil
 }

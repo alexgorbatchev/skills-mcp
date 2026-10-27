@@ -136,7 +136,7 @@ func (h *harness) newManager() *Manager {
 	return NewManager(Options{
 		Config: h.cfg,
 		Dirs:   h.dirs,
-		Git:    gitx.New(context.Background()),
+		Git:    gitx.New(),
 		Getenv: func(k string) (string, bool) {
 			v, ok := h.env[k]
 			return v, ok

@@ -2,8 +2,9 @@ package proc
 
 import "syscall"
 
-// sysProcAttr puts the child in its own process group and kills it if the
+// sysProcAttr starts the child in a new session: it leads its own process
+// group, has no controlling terminal to prompt on, and is killed if the
 // daemon dies, so no child outlives a crashed daemon.
 func sysProcAttr() *syscall.SysProcAttr {
-	return &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
+	return &syscall.SysProcAttr{Setsid: true, Pdeathsig: syscall.SIGKILL}
 }

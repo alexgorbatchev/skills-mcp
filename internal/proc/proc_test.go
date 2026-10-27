@@ -131,3 +131,19 @@ func TestRunKillsDetachedGrandchild(t *testing.T) {
 	}
 	t.Fatalf("detached grandchild %s survived", pid)
 }
+
+// A child leads its own session (so its own process group) and has no
+// controlling terminal to prompt on.
+func TestRunNewSession(t *testing.T) {
+	res, err := Run(context.Background(), Command{Name: "sh", Args: []string{"-c", "cat /proc/$$/stat"}, Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat := string(res.Stdout)
+	pid, _, _ := strings.Cut(stat, " ")
+	fields := strings.Fields(stat[strings.LastIndexByte(stat, ')')+2:])
+	// After the command name: state, ppid, pgrp, session, tty_nr.
+	if fields[2] != pid || fields[3] != pid || fields[4] != "0" {
+		t.Fatalf("pid %s: pgrp=%s session=%s tty_nr=%s", pid, fields[2], fields[3], fields[4])
+	}
+}

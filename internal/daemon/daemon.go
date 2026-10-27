@@ -71,7 +71,7 @@ func Run(ctx context.Context, opts Options) error {
 	kill, killNow := context.WithCancel(context.WithoutCancel(ctx))
 	defer killNow()
 
-	g := gitx.New(kill)
+	g := gitx.New()
 	var svc *authoring.Service
 	var servers *mcpserver.Servers
 	src := source.NewManager(source.Options{
@@ -149,7 +149,7 @@ func startup(ctx context.Context, cfg *config.Config, src *source.Manager, svc *
 			log.Warn("refreshing source failed", "source", s.Name, "error", err)
 		}
 		if repo := src.Repo(s.Name); s.Writable && repo.Exists() {
-			if _, err := repo.Git.Run(ctx, repo.Dir, gitx.Opts{}, "ls-remote", "origin", repo.Ref()); err != nil {
+			if _, err := repo.Run(ctx, gitx.Opts{}, "ls-remote", "origin", repo.Ref()); err != nil {
 				log.Warn("the remote of a writable source is unreachable; pushes will fail", "source", s.Name, "error", err)
 			}
 		}

@@ -652,3 +652,29 @@ func TestRefreshWaitHonorsDeadline(t *testing.T) {
 	}
 	<-st.refreshLock
 }
+
+// A global configuration that renames the default remote and refuses
+// implicit bare repositories still clones, fetches, extracts, and maintains.
+func TestHostileGlobalGitConfig(t *testing.T) {
+	u := newUpstream(t)
+	u.write("skills/agent/a/SKILL.md", skillDoc("a", "one"))
+	u.commit("one")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	writeFile(t, filepath.Join(home, ".gitconfig"), "[clone]\n\tdefaultRemoteName = upstream\n[safe]\n\tbareRepository = explicit\n", 0o644)
+
+	h := newHarness(t, gitSourceConfig(u.url()))
+	h.init()
+	h.refresh("reg")
+	u.write("skills/agent/a/SKILL.md", skillDoc("a", "two"))
+	two := u.commit("two")
+	h.refresh("reg")
+	if got := h.m.Current("reg"); got != two {
+		t.Fatalf("current = %q, want %q", got, two)
+	}
+	if err := h.m.Maintain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

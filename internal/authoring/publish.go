@@ -40,7 +40,7 @@ func (s *Service) publish(ctx context.Context, c *change, progress func(string))
 		// a force push) is ever republished unscanned.
 		lease := "--force-with-lease=" + repo.Ref() + ":" + rec.BaseRevision
 		s.withSource(rec.Source, func() {
-			out, pushErr = repo.Git.Run(ctx, repo.Dir, gitx.Opts{}, "push", "--porcelain", "--no-follow-tags", lease, "origin", commit+":"+repo.Ref())
+			out, pushErr = repo.Run(ctx, gitx.Opts{}, "push", "--porcelain", "--no-verify", "--no-follow-tags", lease, "origin", commit+":"+repo.Ref())
 		})
 		res := gitx.ParsePush(out, repo.Ref())
 		switch {

@@ -4,7 +4,9 @@ package proc
 
 import "syscall"
 
-// sysProcAttr puts the child in its own process group. Pdeathsig is Linux-only.
+// sysProcAttr starts the child in a new session: it leads its own process
+// group and has no controlling terminal to prompt on. Pdeathsig is
+// Linux-only.
 func sysProcAttr() *syscall.SysProcAttr {
-	return &syscall.SysProcAttr{Setpgid: true}
+	return &syscall.SysProcAttr{Setsid: true}
 }

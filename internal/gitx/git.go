@@ -8,8 +8,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -25,41 +27,49 @@ const (
 
 var networkCommands = map[string]bool{"clone": true, "fetch": true, "push": true, "ls-remote": true}
 
+// hookSwitchEnv holds "false"; --config-env reads it to disable each hook
+// defined in configuration.
+const hookSwitchEnv = "SKILLS_MCP_HOOK_ENABLED"
+
 // Git runs git commands. The zero value is not usable; call New.
 type Git struct {
 	env []string
 }
 
-// New prepares the git environment. When neither GIT_SSH_COMMAND nor
-// core.sshCommand is set, ssh runs in batch mode so it never prompts.
-func New(ctx context.Context) *Git {
-	env := append(os.Environ(),
+// New prepares the git environment. Children run without a controlling
+// terminal (see proc), so ssh and credential helpers cannot prompt
+// whatever the user's ssh configuration says.
+func New() *Git {
+	return &Git{env: append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0",
 		"SSH_ASKPASS_REQUIRE=never",
-	)
-	if os.Getenv("GIT_SSH_COMMAND") == "" {
-		out, err := proc.Run(ctx, proc.Command{
-			Name: "git", Args: []string{"config", "--get", "core.sshCommand"}, Env: env, Timeout: LocalTimeout,
-		})
-		if err != nil || strings.TrimSpace(string(out.Stdout)) == "" {
-			env = append(env, "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
-		}
-	}
-	return &Git{env: env}
+		hookSwitchEnv+"=false",
+	)}
 }
 
 // Opts adjusts one invocation.
 type Opts struct {
 	Stdin  io.Reader
 	Stdout io.Writer // nil captures stdout into the returned bytes
+	// Bare names dir as the repository with --git-dir, which
+	// safe.bareRepository=explicit requires for bare repositories.
+	Bare bool
 }
 
 // Run executes `git -C dir <args>` and returns stdout. On a non-zero exit
 // the captured stdout is still returned with the error, so callers can parse
 // porcelain output of a rejected push.
 func (g *Git) Run(ctx context.Context, dir string, opts Opts, args ...string) ([]byte, error) {
+	repo := []string{"-C", dir}
+	if opts.Bare {
+		repo = append(repo, "--git-dir=.")
+	}
+	hooks, err := g.configuredHooks(ctx, repo)
+	if err != nil {
+		return nil, err
+	}
 	sub := subcommand(args)
-	full := []string{"-C", dir, "-c", "core.hooksPath=/dev/null"}
+	full := append(append(slices.Clone(repo), "-c", "core.hooksPath=/dev/null"), hooks...)
 	timeout := LocalTimeout
 	switch {
 	case sub == "maintenance":
@@ -75,7 +85,7 @@ func (g *Git) Run(ctx context.Context, dir string, opts Opts, args ...string) ([
 	// check-ignore rejects literal pathspec magic and already matches its
 	// input as literal paths.
 	if sub != "check-ignore" {
-		env = append(append([]string(nil), env...), "GIT_LITERAL_PATHSPECS=1")
+		env = append(slices.Clone(env), "GIT_LITERAL_PATHSPECS=1")
 	}
 	res, err := proc.Run(ctx, proc.Command{
 		Name:    "git",
@@ -86,6 +96,33 @@ func (g *Git) Run(ctx context.Context, dir string, opts Opts, args ...string) ([
 		Timeout: timeout,
 	})
 	return res.Stdout, err
+}
+
+// configuredHooks returns options that disable every hook defined in
+// configuration (hook.<name>.command, Git 2.54 and later), which
+// core.hooksPath does not cover. The listing runs in the same repository
+// context as the command, so local and conditionally included
+// configuration count. --config-env splits at the last "=", so hook names
+// containing "=" are disabled too.
+func (g *Git) configuredHooks(ctx context.Context, repo []string) ([]string, error) {
+	args := append(slices.Clone(repo), "config", "-z", "--name-only", "--get-regexp", `^hook\..+\.(command|event)$`)
+	res, err := proc.Run(ctx, proc.Command{Name: "git", Args: args, Env: g.env, Timeout: LocalTimeout})
+	if ExitCode(err) == 1 { // no hook keys
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("listing configured git hooks: %w", err)
+	}
+	var opts []string
+	seen := map[string]bool{}
+	for _, key := range SplitNUL(res.Stdout) {
+		name := key[len("hook."):strings.LastIndexByte(key, '.')]
+		if !seen[name] {
+			seen[name] = true
+			opts = append(opts, "--config-env=hook."+name+".enabled="+hookSwitchEnv)
+		}
+	}
+	return opts, nil
 }
 
 func subcommand(args []string) string {

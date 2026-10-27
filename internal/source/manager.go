@@ -776,7 +776,7 @@ func (m *Manager) Maintain(ctx context.Context) error {
 			continue
 		}
 		st.srcMu.Lock()
-		_, err := st.repo.Git.Run(ctx, st.repo.Dir, gitx.Opts{}, "maintenance", "run", "--auto")
+		_, err := st.repo.Run(ctx, gitx.Opts{}, "maintenance", "run", "--auto")
 		st.srcMu.Unlock()
 		if err != nil {
 			errs = append(errs, fmt.Errorf("maintenance of %s: %w", st.src.Name, err))

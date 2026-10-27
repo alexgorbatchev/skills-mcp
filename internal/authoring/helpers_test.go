@@ -167,7 +167,7 @@ func newEnv(t *testing.T, mutate ...func(*config.Source)) *env {
 			ChangeTTL: 24 * time.Hour, DefaultWriteSource: "reg", Sources: []*config.Source{src},
 		},
 		dirs:  paths.Dirs{Config: filepath.Join(root, "config"), Cache: filepath.Join(root, "cache"), State: filepath.Join(root, "state")},
-		git:   gitx.New(context.Background()),
+		git:   gitx.New(),
 		clock: &clock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
 	}
 	e.start()

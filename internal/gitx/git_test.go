@@ -2,8 +2,11 @@ package gitx
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -27,7 +30,7 @@ func newRepo(t *testing.T, g *Git) string {
 
 func TestRunEnvironment(t *testing.T) {
 	ctx := context.Background()
-	g := New(ctx)
+	g := New()
 	dir := newRepo(t, g)
 
 	// Hooks never run, even with a configured hooks path.
@@ -83,38 +86,101 @@ func TestRunEnvironment(t *testing.T) {
 	}
 }
 
-func TestNewRespectsSSHCommand(t *testing.T) {
-	ctx := context.Background()
-	t.Setenv("GIT_SSH_COMMAND", "custom-ssh")
-	g := New(ctx)
-	if !contains(g.env, "GIT_SSH_COMMAND=custom-ssh") || contains(g.env, "GIT_SSH_COMMAND=ssh -o BatchMode=yes") {
-		t.Fatal("GIT_SSH_COMMAND overridden")
-	}
-	t.Setenv("GIT_SSH_COMMAND", "")
+// isolateConfig points global configuration at an empty home.
+func isolateConfig(t *testing.T) string {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", home)
-	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte("[core]\n\tsshCommand = other-ssh\n"), 0o644); err != nil {
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	return home
+}
+
+// Hooks defined in configuration (Git 2.54+) ignore core.hooksPath; every
+// configured hook name is disabled, including names containing "=".
+func TestRunDisablesConfiguredHooks(t *testing.T) {
+	isolateConfig(t)
+	ctx := context.Background()
+	g := New()
+	dir := newRepo(t, g)
+	marker := filepath.Join(dir, "hook-ran")
+	for _, kv := range [][2]string{
+		{"hook.mark.command", "touch " + marker},
+		{"hook.mark.event", "pre-commit"},
+		{"hook.a=b.command", "touch " + marker},
+		{"hook.a=b.event", "reference-transaction"},
+	} {
+		if _, err := g.Run(ctx, dir, Opts{}, "config", "--add", kv[0], kv[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := g.configuredHooks(ctx, []string{"-C", dir})
+	want := []string{"--config-env=hook.mark.enabled=" + hookSwitchEnv, "--config-env=hook.a=b.enabled=" + hookSwitchEnv}
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("configuredHooks = %q, %v; want %q", got, err, want)
+	}
+	if _, err := g.Run(ctx, dir, Opts{}, "commit", "-q", "--allow-empty", "-m", "second"); err != nil {
 		t.Fatal(err)
 	}
-	if contains(New(ctx).env, "GIT_SSH_COMMAND=ssh -o BatchMode=yes") {
-		t.Fatal("batch ssh set despite core.sshCommand")
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("configured hook ran")
 	}
-	if err := os.Remove(filepath.Join(home, ".gitconfig")); err != nil {
-		t.Fatal(err)
+	if !supportsConfigHooks(t) {
+		t.Log("git predates configured hooks; skipping the control run")
+		return
 	}
-	if !contains(New(ctx).env, "GIT_SSH_COMMAND=ssh -o BatchMode=yes") {
-		t.Fatal("batch ssh not set")
+	// Control: plain git runs the same hooks.
+	cmd := exec.Command("git", "-C", dir, "commit", "-q", "--allow-empty", "-m", "third")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("control commit: %v: %s", err, out)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("control commit did not run the configured hook")
 	}
 }
 
-func contains(env []string, kv string) bool {
-	for _, e := range env {
-		if e == kv {
-			return true
-		}
+// supportsConfigHooks reports whether git is 2.54 or later.
+func supportsConfigHooks(t *testing.T) bool {
+	t.Helper()
+	out, err := exec.Command("git", "version").Output()
+	if err != nil {
+		t.Fatal(err)
 	}
-	return false
+	var major, minor int
+	if _, err := fmt.Sscanf(string(out), "git version %d.%d", &major, &minor); err != nil {
+		t.Fatalf("parsing %q: %v", out, err)
+	}
+	return major > 2 || major == 2 && minor >= 54
+}
+
+func TestRunConfiguredHooksListingFails(t *testing.T) {
+	isolateConfig(t)
+	_, err := New().Run(context.Background(), filepath.Join(t.TempDir(), "missing"), Opts{}, "status")
+	if err == nil || !strings.Contains(err.Error(), "listing configured git hooks") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+// Bare runs name the repository explicitly, which safe.bareRepository=explicit
+// requires.
+func TestRunBareRepository(t *testing.T) {
+	home := isolateConfig(t)
+	ctx := context.Background()
+	g := New()
+	src := newRepo(t, g)
+	bare := filepath.Join(t.TempDir(), "repo.git")
+	if _, err := g.Run(ctx, src, Opts{}, "clone", "-q", "--bare", src, bare); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte("[safe]\n\tbareRepository = explicit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(ctx, bare, Opts{}, "rev-parse", "HEAD"); err == nil {
+		t.Fatal("implicit bare repository accepted; the test does not exercise safe.bareRepository")
+	}
+	if _, err := g.Run(ctx, bare, Opts{Bare: true}, "rev-parse", "HEAD"); err != nil {
+		t.Fatalf("bare run: %v", err)
+	}
 }
 
 func TestSubcommand(t *testing.T) {
@@ -130,7 +196,7 @@ func TestSubcommand(t *testing.T) {
 }
 
 func TestExitCode(t *testing.T) {
-	g := New(context.Background())
+	g := New()
 	_, err := g.Run(context.Background(), t.TempDir(), Opts{}, "rev-parse", "HEAD")
 	if ExitCode(err) <= 0 {
 		t.Fatalf("ExitCode = %d for %v", ExitCode(err), err)
