@@ -1,12 +1,8 @@
 package main
 
 import (
-	"fmt"
-
-	cobrahelptree "github.com/alexgorbatchev/cobra-help-tree/v2"
+	cobrahelptree "github.com/alexgorbatchev/cobra-help-tree/v4"
 	"github.com/spf13/cobra"
-
-	"github.com/alexgorbatchev/skills-mcp/internal/agent"
 )
 
 var techCatalog = cobrahelptree.TechCatalog{
@@ -43,15 +39,6 @@ func setupHelp(cmd *cobra.Command) {
 	_ = cobrahelptree.SetupWithOptions(cmd, cobrahelptree.HelpOptions{ // the static options always validate
 		Catalog: techCatalog,
 		Tree:    cobrahelptree.TreeOptions{HideGeneratedCommands: true},
-	})
-	help := cmd.HelpFunc()
-	cmd.SetHelpFunc(func(c *cobra.Command, args []string) {
-		if agent.IsAgentMode() {
-			if _, err := fmt.Fprintln(c.OutOrStdout(), "ALERT: Agents must read `AGENT=1 skills-mcp skill` before using this tool."); err != nil {
-				c.PrintErrln(err)
-				return
-			}
-		}
-		help(c, args)
+		Skill:   cobrahelptree.SkillSource{Repository: "alexgorbatchev/skills-mcp", Branch: "main"},
 	})
 }

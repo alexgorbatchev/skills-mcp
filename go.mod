@@ -3,7 +3,7 @@ module github.com/alexgorbatchev/skills-mcp
 go 1.26.2
 
 require (
-	github.com/alexgorbatchev/cobra-help-tree/v2 v2.0.1
+	github.com/alexgorbatchev/cobra-help-tree/v4 v4.0.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-git/go-git/v5 v5.19.3
 	github.com/google/jsonschema-go v0.4.3

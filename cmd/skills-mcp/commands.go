@@ -10,7 +10,7 @@ import (
 	"strings"
 	"syscall"
 
-	cobrahelptree "github.com/alexgorbatchev/cobra-help-tree/v2"
+	cobrahelptree "github.com/alexgorbatchev/cobra-help-tree/v4"
 	"github.com/spf13/cobra"
 
 	"github.com/alexgorbatchev/skills-mcp/internal/agent"

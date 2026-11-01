@@ -41,7 +41,6 @@ func newRootCommand() *cobra.Command {
 		newCatalogCommand(resolve),
 		newBundleCommand(resolve),
 		newTokenCommand(resolve),
-		newSkillCommand(),
 	)
 	setupHelp(rootCmd)
 	return rootCmd

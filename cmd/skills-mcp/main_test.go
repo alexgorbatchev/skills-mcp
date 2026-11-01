@@ -16,6 +16,15 @@ import (
 	"github.com/spf13/pflag"
 )
 
+const skillText = `Install the skills-mcp skill using the Skills CLI:
+
+  npx skills add alexgorbatchev/skills-mcp --skill skills-mcp
+
+Skill:
+
+  https://github.com/alexgorbatchev/skills-mcp/tree/main/skills/skills-mcp
+`
+
 const skillAlert = "ALERT: Agents must read `AGENT=1 skills-mcp skill` before using this tool.\n"
 
 func execute(args ...string) (stdout, stderr string, code int) {
